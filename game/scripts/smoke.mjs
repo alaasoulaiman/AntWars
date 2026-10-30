@@ -2844,6 +2844,48 @@ if (startRound && RUSH_EXPECT[startRound]) {
     requestAnimationFrame(tick);
   }, startRound);
 }
+/**
+ * Lane N1 (design note, 2026-10-29: every round speeds up alike once the ramp begins): from
+ * round 6 no round spawns slower than the horde gap of its number. A practice run's first round is watched frame by
+ * frame inside the page: each new entry of the snapshot's spawn log is stamped with the Yard's clock (yardMs, which a
+ * pick sheet stops), so the gaps are read on the game's own clock, on any build (5304e3e too). gap: the round plan's
+ * spawn gap now (curve.ts roundPlan); before: the gap on 5304e3e. A spawn lands on the first frame its timer runs out,
+ * so a measured gap is the plan's gap rounded up to a whole frame; the check reads the median of the first ten.
+ */
+const PACE_EXPECT = {
+  5: { kind: 'breather', gap: 0.3, before: 0.3 },
+  10: { kind: 'boss', gap: 0.315124704862, before: 1.5 },
+  15: { kind: 'breather', gap: 0.243837489558, before: 0.27 },
+  20: { kind: 'boss', gap: 0.188676801268, before: 1.5 },
+  25: { kind: 'boss', gap: 0.145994512169, before: 1.5 },
+  35: { kind: 'breather', gap: 0.1, before: 0.243 },
+};
+let paceRun = null;
+if (startRound && PACE_EXPECT[startRound]) {
+  await page.evaluate((round) => {
+    const w = { round, seen: 0, stamps: [], frames: 0, frameMsSum: 0, last: 0, maxAlive: 0 };
+    window.__n1pace = w;
+    const tick = (t) => {
+      if (w.last > 0 && w.frames < 3000) {
+        w.frames += 1;
+        w.frameMsSum += t - w.last;
+      }
+      w.last = t;
+      const a = window.__antwars;
+      const s = a && a.snapshot();
+      if (s && Array.isArray(s.spawns)) {
+        if (s.round === round && s.phase === 'active') w.maxAlive = Math.max(w.maxAlive, s.alive);
+        while (w.seen < s.spawns.length) {
+          const e = s.spawns[w.seen];
+          w.seen += 1;
+          if (e.round === round && w.stamps.length < 120) w.stamps.push({ kind: e.kind, yardMs: s.yardMs, alive: s.alive });
+        }
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }, startRound);
+}
 if (!colonyFlow && !juiceFlow && !pwaFlow && !titleFlow && !dailyFlow && !(long && stateIn)) titlePass = await passTitle();
 
 if (dev || desktop) {
@@ -3399,6 +3441,32 @@ if (startRound && RUSH_EXPECT[startRound]) {
   }
   log('rush', JSON.stringify(rushRun));
 }
+if (startRound && PACE_EXPECT[startRound]) {
+  const w = await page.evaluate(() => (window.__n1pace ? { ...window.__n1pace, stamps: [...window.__n1pace.stamps] } : null));
+  const e = PACE_EXPECT[startRound];
+  paceRun = { round: startRound, expect: e, spawned: w ? w.stamps.length : 0, maxAlive: w ? w.maxAlive : null };
+  if (w && w.frames > 0) {
+    // A boss round spawns its boss first; the gaps that count are its escort's. The first ten gaps come before the
+    // crowd reaches the 20 alive cap (where a spawn waits for a kill), so the gap alone sets them.
+    const queue = e.kind === 'boss' ? w.stamps.slice(1) : w.stamps;
+    const gaps = [];
+    for (let i = 1; i < queue.length && gaps.length < 10; i++) gaps.push(+((queue[i].yardMs - queue[i - 1].yardMs) / 1000).toFixed(4));
+    const sorted = [...gaps].sort((x, y) => x - y);
+    const frameS = w.frameMsSum / w.frames / 1000;
+    paceRun.frameMs = +(frameS * 1000).toFixed(2);
+    paceRun.boss = e.kind === 'boss' ? (w.stamps[0] ? w.stamps[0].kind : null) : null;
+    paceRun.escortKinds = [...new Set(queue.map((x) => x.kind))];
+    paceRun.gaps = gaps;
+    paceRun.median = sorted.length > 0 ? sorted[Math.floor(sorted.length / 2)] : null;
+    // A spawn lands on the first frame its timer runs out: the gap, rounded up to a whole frame (4 ms spare). The gap on
+    // 5304e3e sits past the window at every round the lane checks (1.5 s at round 10, 0.27 s and a frame at round 15).
+    paceRun.window = [+(e.gap - 0.005).toFixed(4), +(e.gap + frameS + 0.004).toFixed(4)];
+    paceRun.ok =
+      gaps.length === 10 && paceRun.median >= paceRun.window[0] && paceRun.median <= paceRun.window[1] && w.maxAlive <= 20 &&
+      (e.kind !== 'boss' || paceRun.escortKinds.every((k) => k === 'termite'));
+  } else paceRun.ok = false;
+  log('pace', JSON.stringify(paceRun));
+}
 if (!frames) await takeSample();
 const final = await note('final');
 const result = {
@@ -3443,6 +3511,7 @@ const result = {
   dailyResult,
   pauseRun,
   rushRun,
+  paceRun,
 };
 writeFileSync(path.join(proof, `smoke_${fileTag}.json`), JSON.stringify(result, null, 2));
 
@@ -3485,6 +3554,8 @@ const checks = {
   sheetHoldsUntilTap: growth ? !!growthRun && Array.isArray(growthRun.freezes) && growthRun.freezes.length > 0 && growthRun.freezes.every((f) => f >= 250) && Math.max(...growthRun.freezes) >= 1000 : true,
   yardHoldsBehindSheet: growth ? !!growthRun && !!growthRun.behindSheet && growthRun.behindSheet.ok : true,
   rushScales: startRound && RUSH_EXPECT[startRound] ? !!rushRun && rushRun.ok === true : true,
+  // Lane N1: the round's spawns come at the round plan's gap, never slower than the horde from round 6.
+  paceRamp: startRound && PACE_EXPECT[startRound] ? !!paceRun && paceRun.ok === true : true,
   pauseHolds: pauseFlow ? !!pauseRun && pauseRun.sheets.length >= 2 && pauseRun.sheets.every((x) => x.ok) && !!pauseRun.breakSheet && pauseRun.breakSheet.ok && !!pauseRun.underSheet && pauseRun.underSheet.ok : true,
   buyRefusedUnderSheet: pauseFlow ? !!pauseRun && !!pauseRun.buyHeld && pauseRun.buyHeld.ok : true,
   rockBlocks: growth ? !!growthRun && !!growthRun.rock && growthRun.rock.ok : true,

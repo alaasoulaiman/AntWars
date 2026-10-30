@@ -2,32 +2,38 @@
 // Table tests for lane G9, M4 (design note, 2026-10-25): the termite rush gets harder each time it comes back,
 // counted by appearance (round 5 is the first, round 15 the second), the first rush as before, every part capped.
 import { describe, expect, it } from 'vitest';
-import { BREATHER_COUNT, BREATHER_SPAWN_GAP, MAX_ALIVE, breatherAppearance, breatherByAppearance, roundPlan } from './curve';
+import { BREATHER_COUNT, BREATHER_SPAWN_GAP, MAX_ALIVE, breatherAppearance, breatherByAppearance, roundPlan, spawnGapSeconds } from './curve';
 import { dailySpawnKinds } from './daily';
 import { PREDATORS } from './roster';
 
-// [appearance, round, termites, gap s, bite share, shots to drop one]
+// [appearance, round, termites, the rush's own gap s, the round's gap s, bite share, shots to drop one]
+// Lane N1, design note of 2026-10-29: from round 6 no round spawns slower than the horde gap of its number, so the
+// round's gap is the faster of the rush's own and the horde's (0.27 s at round 15 before, the horde's 0.2438 now; the
+// 0.1 s floor from round 35). The own gap (breatherByAppearance) is unchanged.
 const TABLE = [
-  [1, 5, 40, 0.3, 1, 1],
-  [2, 15, 48, 0.27, 1.15, 1],
-  [3, 35, 56, 0.243, 1.3, 2],
-  [4, 45, 64, 0.2187, 1.45, 2],
-  [5, 55, 72, 0.19683, 1.6, 2],
-  [6, 65, 80, 0.177147, 1.75, 3],
-  [7, 85, 88, 0.1594323, 1.9, 3],
-  [8, 95, 96, 0.15, 2, 3],
+  [1, 5, 40, 0.3, 0.3, 1, 1],
+  [2, 15, 48, 0.27, 0.243837489558, 1.15, 1],
+  [3, 35, 56, 0.243, 0.1, 1.3, 2],
+  [4, 45, 64, 0.2187, 0.1, 1.45, 2],
+  [5, 55, 72, 0.19683, 0.1, 1.6, 2],
+  [6, 65, 80, 0.177147, 0.1, 1.75, 3],
+  [7, 85, 88, 0.1594323, 0.1, 1.9, 3],
+  [8, 95, 96, 0.15, 0.1, 2, 3],
 ] as const;
 
 describe('the termite rush by appearance (lane G9, M4)', () => {
-  it.each(TABLE)('appearance %i is round %i: %i termites, %f s apart, at most 20 alive', (_n, round, count, gap) => {
+  it.each(TABLE)('appearance %i is round %i: %i termites, %f s apart on their own, %f s in the round, at most 20 alive', (n, round, count, own, gap) => {
     const p = roundPlan(round);
     expect(p.kind).toBe('breather');
     expect(p.total).toBe(count);
+    const ownGap = breatherByAppearance(n).gap;
+    expect(ownGap).toBeCloseTo(own, 9);
     expect(p.spawnGap).toBeCloseTo(gap, 9);
+    expect(p.spawnGap).toBe(round >= 6 ? Math.min(ownGap, spawnGapSeconds(round)) : ownGap);
     expect(p.aliveCap).toBe(MAX_ALIVE);
   });
 
-  it.each(TABLE)('appearance %i (round %i, %i termites %f s apart): a bite of x%f of the first rush, %i shots to drop one', (n, round, _count, _gap, bite, hits) => {
+  it.each(TABLE)('appearance %i (round %i, %i termites, %f s on their own, %f s in the round): a bite of x%f of the first rush, %i shots to drop one', (n, round, _count, _own, _gap, bite, hits) => {
     expect(breatherAppearance(round)).toBe(n);
     const spec = breatherByAppearance(n);
     expect(spec.bite).toBeCloseTo(bite, 9);

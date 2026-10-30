@@ -2,9 +2,13 @@
 // Table tests that pin the CONCEPT_V2 section 2 round curve.
 import { describe, expect, it } from 'vitest';
 import {
+  BOSS_SPAWN_GAP,
   BREAK_SECONDS,
   BREATHER_COUNT,
+  BREATHER_SPAWN_GAP,
   COUNT_BASE,
+  breatherAppearance,
+  breatherByAppearance,
   MAX_ALIVE,
   SPAWN_GAP_TUNING,
   PREDATOR_SPEED_CAP,
@@ -145,11 +149,12 @@ describe('the game spawn gap: half the concept gap (design note of 2026-10-24), 
     expect(spawnGapSeconds(round)).toBeCloseTo(expected, 9);
   });
 
-  it('the termite rush (round 5) and the boss rounds keep their own gaps, and the alive cap stays 20', () => {
+  // Lane N1, design note of 2026-10-29: round 10's escort came 1.5 s apart here; from the ramp it takes the horde gap.
+  it('the termite rush at round 5 keeps its own gap, the round 10 boss takes the horde gap (lane N1), the alive cap stays 20', () => {
     expect(roundPlan(5).kind).toBe('breather');
     expect(roundPlan(5).spawnGap).toBe(0.3);
     expect(roundPlan(10).kind).toBe('boss');
-    expect(roundPlan(10).spawnGap).toBe(1.5);
+    expect(roundPlan(10).spawnGap).toBe(spawnGapSeconds(10));
     expect(roundPlan(6).spawnGap).toBe(spawnGapSeconds(6));
     expect(MAX_ALIVE).toBe(20);
   });
@@ -179,6 +184,60 @@ describe('the game spawn gap: half the concept gap (design note of 2026-10-24), 
     expect(spawnGapSeconds(32)).toBeGreaterThan(0.1);
     expect(spawnGapSeconds(33)).toBe(0.1);
     expect(spawnGapSeconds(500)).toBe(0.1);
+  });
+});
+
+// Design note, 2026-10-29 (lane N1): from the ramp (LATE_SPAWN_FROM, round 6) no round type may spawn slower than the
+// horde gap of its number; a boss round's escort was 1.5 s apart, so round 10 read as a slow round, and a later rush
+// kept its own slower gap.
+/** The round's own gap: the escort's for a boss round, the rush's by its visit, the horde gap for a horde round. */
+function ownGap(round: number): number {
+  const kind = roundPlan(round).kind;
+  if (kind === 'boss') return BOSS_SPAWN_GAP;
+  if (kind === 'breather') return breatherByAppearance(breatherAppearance(round)).gap;
+  return spawnGapSeconds(round);
+}
+
+describe('from the ramp no round spawns slower than the horde gap of its number (lane N1)', () => {
+  // [round, kind, the plan's gap now, the gap on 5304e3e]
+  it.each([
+    [5, 'breather', 0.3, 0.3],
+    [6, 'horde', 0.38689046875, 0.38689046875],
+    [10, 'boss', 0.315124704862, 1.5],
+    [15, 'breather', 0.243837489558, 0.27],
+    [20, 'boss', 0.188676801268, 1.5],
+    [25, 'boss', 0.145994512169, 1.5],
+    [30, 'boss', 0.112967770496, 1.5],
+    [35, 'breather', 0.1, 0.243],
+    [50, 'boss', 0.1, 1.5],
+  ] as const)('round %i (%s) spawns every %f s (it was %f s)', (round, kind, now, before) => {
+    const p = roundPlan(round);
+    expect(p.kind).toBe(kind);
+    expect(p.spawnGap).toBeCloseTo(now, 11);
+    // The rule: the round's own gap before the ramp, the faster of it and the horde gap from the ramp on.
+    const own = ownGap(round);
+    expect(own).toBeCloseTo(before, 11);
+    expect(p.spawnGap).toBe(round >= LATE_SPAWN_FROM ? Math.min(own, spawnGapSeconds(round)) : own);
+    if (round >= LATE_SPAWN_FROM) expect(p.spawnGap).toBeLessThanOrEqual(spawnGapSeconds(round));
+    // The counts, the cap and the health do not move with the gap.
+    expect(p.aliveCap).toBe(MAX_ALIVE);
+    expect(p.health).toBe(enemyHealth(round));
+  });
+
+  it('every round from 6 to 120 spawns at the horde gap of its number or faster; rounds 1 to 5 keep their own', () => {
+    for (let r = 1; r <= 120; r++) {
+      const p = roundPlan(r);
+      if (r < LATE_SPAWN_FROM) expect(p.spawnGap).toBe(ownGap(r));
+      else {
+        expect(p.spawnGap).toBeLessThanOrEqual(spawnGapSeconds(r));
+        expect(p.spawnGap).toBe(Math.min(ownGap(r), spawnGapSeconds(r)));
+        expect(p.spawnGap).toBeGreaterThanOrEqual(0.1);
+      }
+    }
+    expect(LATE_SPAWN_FROM).toBe(6);
+    // Round 5's rush already beat its horde (0.3 s against 0.81 s): nothing moves there.
+    expect(roundPlan(5).spawnGap).toBe(BREATHER_SPAWN_GAP);
+    expect(spawnGapSeconds(5)).toBeGreaterThan(BREATHER_SPAWN_GAP);
   });
 });
 
@@ -268,13 +327,14 @@ describe('a boss every 10th round (slice 4), the Anteater keeps every 25th', () 
     expect(isBossRound(round as number)).toBe(kind !== null);
   });
 
-  it('a 10th round boss comes in place of the breather, with 30 termites 1.5 s apart, as the Anteater does', () => {
+  // Lane N1, design note of 2026-10-29: the 30 termites came 1.5 s apart here; now they come at the horde gap of the round.
+  it('a 10th round boss comes in place of the breather, with 30 termites at the horde gap of its round, as the Anteater does', () => {
     for (const r of [10, 20, 30, 40]) {
       const p = roundPlan(r);
       expect(p.kind).toBe('boss');
       expect(p.boss).toBe(bossKind(r));
       expect(p.total).toBe(31);
-      expect(p.spawnGap).toBe(1.5);
+      expect(p.spawnGap).toBe(spawnGapSeconds(r));
     }
     // Round 15 is the second termite rush (lane G9, M4: 48 of them, rush.test.ts).
     expect(roundPlan(15)).toMatchObject({ kind: 'breather', boss: null, total: 48 });

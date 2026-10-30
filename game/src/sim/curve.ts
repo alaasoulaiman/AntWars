@@ -26,14 +26,18 @@ export const SPAWN_GAP_SHRINK = 0.95;
 export const SPAWN_GAP_FLOOR = 0.1;
 /**
  * Design note, 2026-10-24: predators spawn 50 percent faster, so every horde round's gap is half the concept's,
- * the 0.1 s floor kept. The termite breather (0.3 s) and the Anteater's round (1.5 s) keep their own gaps.
+ * the 0.1 s floor kept. The termite rush and the boss rounds have gaps of their own (0.3 s and 1.5 s), held to the horde
+ * ramp from LATE_SPAWN_FROM on (lane N1, rampGap).
  */
 export const SPAWN_GAP_TUNING = 0.5;
 /**
  * Design note, 2026-10-24: after a play test this halving came at round 11, so the later hordes spawn really fast.
  * Design note, 2026-10-25: it moves to round 6, because standing still won too easily too early. From round 6 every
- * horde round's gap halves again (a quarter of the concept's), the 0.1 s floor kept. Rounds 1 to 5 are as before; the
- * termite rush and the boss rounds keep their own gaps, and the 20 alive cap is unchanged.
+ * horde round's gap halves again (a quarter of the concept's), the 0.1 s floor kept. Rounds 1 to 5 are as before.
+ * Design note, 2026-10-29 (lane N1): from this round on no round type may spawn slower than the horde ramp of its
+ * number; the boss escort sat at 1.5 s and round 10 read as a slow round. A boss round's escort and a termite rush
+ * take the horde gap whenever it is the faster (rampGap). Before it every round keeps its own gap (the first rush,
+ * round 5, its 0.3 s). The 20 alive cap is unchanged.
  */
 export const LATE_SPAWN_FROM = 6;
 export const LATE_SPAWN_TUNING = 0.5;
@@ -44,7 +48,10 @@ export const PREDATOR_SPEED_CAP = 0.94;
 /** Every 5th round is a breather: a termite rush of 40, fast and weak. */
 export const BREATHER_EVERY = 5;
 export const BREATHER_COUNT = 40;
-/** Termites pour in faster than the horde; a first guess, tune it in the playtest. */
+/**
+ * The first rush's own gap: termites pour in faster than the horde of round 5 (0.81 s); a first guess, tune it in the
+ * playtest. Lane N1: from round 6 the round plan takes the faster of a rush's own gap and the horde gap.
+ */
 export const BREATHER_SPAWN_GAP = 0.3;
 /**
  * Design note, 2026-10-25 (lane G9, M4): the termite rush gets harder each time it comes back; its first visit stays
@@ -59,6 +66,9 @@ export const BREATHER_SPAWN_GAP = 0.3;
  *   bite         x1    x1.15  x1.3   x1.45   x1.6    x1.75   x1.9    x2 (the cap)
  *   shots        1     1      2      2       2       3       3       3
  * The 20 alive cap still holds the crowd, so a later rush is longer and denser, never a wall.
+ * Lane N1: the gap row is the rush's own gap; the round plan takes the faster of it and the horde gap of
+ * the round (rampGap). The horde is the faster at every visit after the first: round 15 comes 0.2438 s apart (0.27 on
+ * its own), and from round 35 every rush comes at the horde's 0.1 s floor.
  */
 export const BREATHER_COUNT_STEP = 8;
 export const BREATHER_COUNT_CAP = 100;
@@ -78,7 +88,12 @@ export const BOSS_EVERY = 25;
 export const MID_BOSS_EVERY = 10;
 export type BossKind = 'anteater' | 'mantis' | 'hornet';
 export const MID_BOSS_ROTATION: ReadonlyArray<BossKind> = ['mantis', 'hornet'];
-/** The Anteater comes first, then a trickle of termites so the round never goes quiet. */
+/**
+ * The Anteater comes first, then a trickle of termites so the round never goes quiet. BOSS_SPAWN_GAP is the escort's own
+ * gap, the slowest it may come. Design note, 2026-10-29 (lane N1): at 1.5 s the escort made round 10 a slow round;
+ * every boss round comes after the ramp begins, so the round plan gives its escort the horde gap of the round
+ * (rampGap): 0.3151 s at round 10, 0.1887 s at 20, 0.146 s at 25, the 0.1 s floor from 33 on (all 1.5 s before).
+ */
 export const BOSS_ESCORT = 30;
 export const BOSS_SPAWN_GAP = 1.5;
 
@@ -137,6 +152,15 @@ export function spawnGapSeconds(round: number): number {
   assertRound(round);
   const late = round >= LATE_SPAWN_FROM ? LATE_SPAWN_TUNING : 1;
   return Math.max(SPAWN_GAP_FLOOR, SPAWN_GAP_START * Math.pow(SPAWN_GAP_SHRINK, round - 1) * SPAWN_GAP_TUNING * late);
+}
+
+/**
+ * Lane N1: a round's own gap (a boss round's escort, a termite rush) held to the horde ramp. Before
+ * LATE_SPAWN_FROM the own gap stands; from it the round never spawns slower than the horde gap of its number.
+ */
+export function rampGap(round: number, own: number): number {
+  assertRound(round);
+  return round >= LATE_SPAWN_FROM ? Math.min(own, spawnGapSeconds(round)) : own;
 }
 
 export type SpeedTier = 'walk' | 'jog' | 'sprint';
@@ -279,7 +303,7 @@ export function roundPlan(round: number): RoundPlan {
     total,
     aliveCap: Math.min(MAX_ALIVE, total),
     health: enemyHealth(round),
-    spawnGap: boss ? BOSS_SPAWN_GAP : rush ? rush.gap : spawnGapSeconds(round),
+    spawnGap: boss ? rampGap(round, BOSS_SPAWN_GAP) : rush ? rampGap(round, rush.gap) : spawnGapSeconds(round),
     termiteBite: rush ? rush.bite : 1,
     termiteHits: rush ? rush.hits : 1,
     breakSeconds: BREAK_SECONDS,
