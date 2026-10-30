@@ -13,7 +13,9 @@ import { attachAudio, isMuted, toggleMute } from './audio';
 import { HOWTO_ITEMS, readHowToSeen, writeHowToSeen } from './howto';
 import { PRESS_SLOP_PX, STICK_RADIUS, TapTracker, ThumbStick, type StickReading } from './joystick';
 import { NEST_BACK_H, NEST_PLAY_H, PICK_CARD_H, PICK_GAP, SHOP_CARD_H, SHOP_CARD_W, lowHealth, nestLayout, pickLayout, pickPlace, shopCell, shopLayout, titleLayout, type SheetPlace, type TitleRow } from './layout';
-import type { Banner, GameScene } from './GameScene';
+import { HP_BAR, TOP_STRIP_H, bossBar, levelBar, muteButton, statsHit, statsLayout, statsShown, type StatsPlace } from './layout';
+import { GROUP_TITLES, rowText, statsSheet, type StatRow, type StatsSheet } from '../sim/stats';
+import type { Banner, GameScene, Snapshot } from './GameScene';
 
 const FONT = '"Arial Rounded MT Bold", "Arial Black", "Helvetica Neue", Arial, sans-serif';
 /** The death screen holds this long before a tap restarts, so a thumb still on the glass cannot skip the result. */
@@ -87,7 +89,12 @@ type Press =
   | { kind: 'death'; action: 'again' | 'nest' }
   | { kind: 'mute' }
   | { kind: 'update' }
-  | { kind: 'howto'; action: 'open' | 'close' };
+  | { kind: 'howto'; action: 'open' | 'close' }
+  | { kind: 'stats'; action: 'toggle' | 'close' };
+
+/** Lane N1, M2: the stats panel's title row, and its label column (the values and notes start right of it). */
+const STATS_HEAD_H = 64;
+const STATS_LABEL_W = 150;
 
 
 function showFps(): boolean {
@@ -207,6 +214,21 @@ export class HudScene extends Phaser.Scene {
   private bannerBusyUntil = 0;
   private hintGone = false;
   private shopShown = false;
+  /** Lane N1, M2: the stats tab (sim/stats.ts): open or not (never saved), where it sits, what shows, and its parts. */
+  private statsOpen = false;
+  private statsPlace!: StatsPlace;
+  private statsVis = { button: false, panel: false };
+  private statsKey = '';
+  private statsPanelH = 0;
+  private statsSheetNow: StatsSheet | null = null;
+  private statsBtnGfx!: Phaser.GameObjects.Graphics;
+  private statsBtnText!: Phaser.GameObjects.Text;
+  private statsGfx!: Phaser.GameObjects.Graphics;
+  private statsTitle!: Phaser.GameObjects.Text;
+  private statsBody!: Phaser.GameObjects.Container;
+  private statsRowTexts: Array<[Phaser.GameObjects.Text, Phaser.GameObjects.Text, Phaser.GameObjects.Text]> = [];
+  private statsGroupTexts: Array<[Phaser.GameObjects.Text, Phaser.GameObjects.Text]> = [];
+  private statsEmpty!: Phaser.GameObjects.Text;
 
   constructor() {
     super('hud');
@@ -276,9 +298,10 @@ export class HudScene extends Phaser.Scene {
       }
     }
     this.vignette = this.add.image(0, 0, vKey).setOrigin(0).setDepth(-1).setAlpha(0).setVisible(false);
-    this.add.rectangle(0, 0, W, 152, 0x000000, 0.3).setOrigin(0);
+    this.add.rectangle(0, 0, W, TOP_STRIP_H, 0x000000, 0.3).setOrigin(0);
     // The sound switch sits in the top strip and above every screen (the title, the nest, the death screen too).
-    this.muteBtn = this.add.image(W / 2 + 20, 44, isMuted() ? 'sound_off' : 'sound_on').setDepth(95).setInteractive({ useHandCursor: true });
+    const MB = muteButton(W);
+    this.muteBtn = this.add.image(MB.x + MB.w / 2, MB.y + MB.h / 2, isMuted() ? 'sound_off' : 'sound_on').setDepth(95).setInteractive({ useHandCursor: true });
     this.roundText = this.add.text(24, 14, 'GET READY', style(46, '#ffffff'));
     this.aliveText = this.add.text(26, 72, '', style(26, '#e9f5e1'));
     this.nectarIcon = this.add.image(W - 32, 44, 'bead').setScale(1.8);
@@ -488,6 +511,53 @@ export class HudScene extends Phaser.Scene {
     this.updateBg.setVisible(false);
     this.updateText.setVisible(false);
 
+    // Lane N1, M2: the stats tab. A small button at the top left in a run; a tap opens a see through
+    // panel with the ant's numbers and every upgrade it owns (sim/stats.ts statsSheet), kept up to date; a second tap or
+    // its x closes it, and so does Tab on a desk. The Yard runs on under it (it is no pick sheet), and nothing is saved.
+    this.statsOpen = false;
+    this.statsKey = '';
+    this.statsVis = { button: false, panel: false };
+    this.statsPanelH = 0;
+    this.statsSheetNow = null;
+    this.statsPlace = statsLayout(H);
+    const SB = this.statsPlace.button;
+    const SP = this.statsPlace.panel;
+    this.statsBtnGfx = this.add.graphics().setDepth(1);
+    this.statsBtnText = this.add.text(SB.x + SB.w / 2, SB.y + SB.h / 2, 'STATS', style(22, '#ffffff', { strokeThickness: 4 })).setOrigin(0.5).setDepth(1.1);
+    this.statsBtnText.setScale(Math.min(1, (SB.w - 12) / Math.max(1, this.statsBtnText.width)));
+    // The panel lies under the HUD's own words (a banner or the nest arrow shows over it); its rows fit it by one scale.
+    this.statsGfx = this.add.graphics().setDepth(-0.5);
+    this.statsTitle = this.add.text(SP.x + 16, SP.y + 16, 'YOUR ANT', style(26, '#ffd34d')).setDepth(-0.4);
+    this.statsBody = this.add.container(SP.x, SP.y + STATS_HEAD_H).setDepth(-0.4);
+    const valueW = SP.w - 16 - STATS_LABEL_W - 16;
+    const wrap = (width: number) => ({ strokeThickness: 3, wordWrap: { width, useAdvancedWrap: true } });
+    this.statsRowTexts = [];
+    for (let i = 0; i < 6; i++) {
+      const row: [Phaser.GameObjects.Text, Phaser.GameObjects.Text, Phaser.GameObjects.Text] = [
+        this.add.text(0, 0, '', style(18, '#ffd34d', { strokeThickness: 3 })),
+        this.add.text(0, 0, '', style(22, '#ffffff', wrap(valueW))),
+        this.add.text(0, 0, '', style(18, '#cfe8c4', wrap(valueW))),
+      ];
+      this.statsRowTexts.push(row);
+      this.statsBody.add(row);
+    }
+    this.statsGroupTexts = [];
+    for (let i = 0; i < GROUP_TITLES.length; i++) {
+      const group: [Phaser.GameObjects.Text, Phaser.GameObjects.Text] = [
+        this.add.text(0, 0, '', style(20, '#ffd34d', { strokeThickness: 3 })),
+        this.add.text(0, 0, '', style(20, '#ffffff', wrap(SP.w - 32))),
+      ];
+      this.statsGroupTexts.push(group);
+      this.statsBody.add(group);
+    }
+    this.statsEmpty = this.add.text(0, 0, 'No upgrades yet: level ups and the nest shop add them here', style(18, '#cfe8c4', wrap(SP.w - 32)));
+    this.statsBody.add(this.statsEmpty);
+    this.applyStatsVisible();
+    const tabKey = this.input.keyboard ? this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.TAB) : null;
+    if (tabKey) tabKey.on('down', () => {
+      if (this.statsVis.button) this.setStatsOpen(!this.statsOpen);
+    });
+
     if (showFps()) this.fpsText = this.add.text(W / 2, 20, '', style(22, '#9effa1')).setOrigin(0.5, 0).setDepth(90);
 
     this.stickGfx = this.add.graphics().setDepth(70);
@@ -567,6 +637,13 @@ export class HudScene extends Phaser.Scene {
       }
       return;
     }
+    // Lane N1, M2: a press that starts on the stats button or on the open panel is the tab's alone: a tap on the button
+    // opens or closes it, a tap on the x closes it, and the stick never takes such a press, a drag either.
+    const statsAt = statsHit(p.x, p.y, this.statsPlace, this.statsPanelH, this.statsVis);
+    if (statsAt) {
+      if (statsAt !== 'panel') this.taps.down(p.id, p.x, p.y, p.downTime, { kind: 'stats', action: statsAt === 'button' ? 'toggle' : 'close' });
+      return;
+    }
     // A press on a card may turn out a tap (it buys or picks on the lift); either way the first free finger takes the
     // stick, anywhere on the screen, so a drag from a card moves the ant and never buys or picks.
     const now = this.time.now;
@@ -617,8 +694,100 @@ export class HudScene extends Phaser.Scene {
         this.world.startOver();
         // Lane G7, M3: the nest's PLAY starts a run on the ladder, where its upgrades count (not a Daily run again).
       } else this.world.playAgain(false);
+    } else if (press && press.kind === 'stats' && this.statsVis.button) {
+      this.setStatsOpen(press.action === 'toggle' ? !this.statsOpen : false);
     }
     if (this.thumb.up(p.id)) this.releaseStick();
+  }
+
+  /** Lane N1, M2: opens or closes the stats panel; it shows from the next frame (update reads statsShown). */
+  private setStatsOpen(open: boolean): void {
+    if (open === this.statsOpen) return;
+    this.statsOpen = open;
+    this.statsKey = '';
+    this.drawStats();
+  }
+
+  /** Lane N1, M2: shows or hides the tab's parts as statsVis says; a panel that shows is filled again. */
+  private applyStatsVisible(): void {
+    this.statsBtnText.setVisible(this.statsVis.button);
+    this.statsTitle.setVisible(this.statsVis.panel);
+    this.statsBody.setVisible(this.statsVis.panel);
+    if (this.statsVis.panel) this.statsKey = '';
+    this.drawStats();
+  }
+
+  /**
+   * Lane N1, M2: fills the panel from the run as it stands (sim/stats.ts), whenever anything it shows has changed: the
+   * six stat rows, then the upgrades owned under their headings, the whole fitted to the panel's room by one scale.
+   */
+  private refreshStats(s: Snapshot): void {
+    const key = [s.ladder, Object.values(s.colonyLevels).join(','), s.owned.join(','), Object.values(s.lines).join(','), Object.values(s.stacks).join(','), Math.ceil(s.hp), s.maxHp].join('|');
+    if (key === this.statsKey) return;
+    this.statsKey = key;
+    const sheet = statsSheet({ ladder: s.ladder, colony: s.colonyLevels, owned: s.owned, lines: s.lines, stacks: s.stacks, hp: s.hp });
+    this.statsSheetNow = sheet;
+    let y = 0;
+    sheet.rows
+      .filter((r) => r.group === 'stat')
+      .forEach((r, i) => {
+        const [label, value, note] = this.statsRowTexts[i];
+        label.setText(r.label).setPosition(16, y + 4);
+        value.setText(r.value).setPosition(16 + STATS_LABEL_W, y);
+        note.setText(r.note).setPosition(16 + STATS_LABEL_W, y + value.height - 4).setVisible(r.note !== '');
+        y += Math.max(label.height, value.height + (r.note !== '' ? note.height - 4 : 0)) + 6;
+      });
+    y += 4;
+    let any = false;
+    GROUP_TITLES.forEach(([group, title], i) => {
+      const [head, items] = this.statsGroupTexts[i];
+      const rows = sheet.rows.filter((r) => r.group === group);
+      head.setVisible(rows.length > 0);
+      items.setVisible(rows.length > 0);
+      if (rows.length === 0) return;
+      any = true;
+      head.setText(title).setPosition(16, y);
+      y += head.height - 2;
+      items.setText(rows.map(rowText).join(', ')).setPosition(16, y);
+      y += items.height + 8;
+    });
+    this.statsEmpty.setVisible(!any).setPosition(16, y);
+    if (!any) y += this.statsEmpty.height + 8;
+    const room = this.statsPlace.panel.h - STATS_HEAD_H - 10;
+    const k = Math.min(1, room / Math.max(1, y));
+    this.statsBody.setScale(k);
+    this.statsPanelH = Math.round(STATS_HEAD_H + y * k + 10);
+    this.drawStats();
+  }
+
+  /** Lane N1, M2: the button (brighter while the panel is open) and the panel, as tall as its rows, with its close x. */
+  private drawStats(): void {
+    const b = this.statsBtnGfx;
+    b.clear();
+    if (this.statsVis.button) {
+      const SB = this.statsPlace.button;
+      b.fillStyle(this.statsOpen ? 0x2f7d32 : 0x10240f, this.statsOpen ? 0.9 : 0.72);
+      b.fillRoundedRect(SB.x, SB.y, SB.w, SB.h, 16);
+      b.lineStyle(3, 0x9effa1, 0.85);
+      b.strokeRoundedRect(SB.x, SB.y, SB.w, SB.h, 16);
+    }
+    const g = this.statsGfx;
+    g.clear();
+    if (!this.statsVis.panel) return;
+    const P = this.statsPlace.panel;
+    g.fillStyle(0x0b140a, 0.7);
+    g.fillRoundedRect(P.x, P.y, P.w, this.statsPanelH, 18);
+    g.lineStyle(3, 0x9effa1, 0.5);
+    g.strokeRoundedRect(P.x, P.y, P.w, this.statsPanelH, 18);
+    // The close x on the title's row; the whole corner square around it is its tap target (layout.ts statsLayout).
+    const C = this.statsPlace.close;
+    const cx = C.x + C.w / 2;
+    const cy = C.y + 32;
+    g.lineStyle(3, 0xffffff, 0.35);
+    g.strokeCircle(cx, cy, 22);
+    g.lineStyle(5, 0xffffff, 0.9);
+    g.lineBetween(cx - 10, cy - 10, cx + 10, cy + 10);
+    g.lineBetween(cx - 10, cy + 10, cx + 10, cy - 10);
   }
 
   /** The one press slop (PRESS_SLOP_PX screen points) in HUD units; displayScale is HUD units per CSS pixel. */
@@ -938,9 +1107,9 @@ export class HudScene extends Phaser.Scene {
       const g = this.hpBar;
       g.clear();
       g.fillStyle(0x000000, 0.6);
-      g.fillRoundedRect(22, 112, 324, 28, 8);
+      g.fillRoundedRect(HP_BAR.x, HP_BAR.y, HP_BAR.w, HP_BAR.h, 8);
       g.fillStyle(f > 0.5 ? 0x6fe36b : f > 0.25 ? 0xffc23d : 0xff4d4d, 1);
-      g.fillRoundedRect(25, 115, Math.max(4, 318 * f), 22, 6);
+      g.fillRoundedRect(HP_BAR.x + 3, HP_BAR.y + 3, Math.max(4, (HP_BAR.w - 6) * f), HP_BAR.h - 6, 6);
       this.hpText.setText(`${Math.ceil(s.hp)} / ${s.maxHp}`);
     }
     const levelKey = `${s.level}|${s.xp}|${s.xpNeed}`;
@@ -948,12 +1117,12 @@ export class HudScene extends Phaser.Scene {
       this.lastLevelKey = levelKey;
       const f = s.xpNeed === null ? 1 : Phaser.Math.Clamp(s.xp / s.xpNeed, 0, 1);
       const g = this.levelBar;
-      const x = W - 346;
+      const LB = levelBar(W);
       g.clear();
       g.fillStyle(0x000000, 0.6);
-      g.fillRoundedRect(x, 112, 324, 28, 8);
+      g.fillRoundedRect(LB.x, LB.y, LB.w, LB.h, 8);
       g.fillStyle(0x9d7bff, 1);
-      if (f > 0) g.fillRoundedRect(x + 3, 115, Math.max(4, 318 * f), 22, 6);
+      if (f > 0) g.fillRoundedRect(LB.x + 3, LB.y + 3, Math.max(4, (LB.w - 6) * f), LB.h - 6, 6);
       this.levelText.setText(s.xpNeed === null ? `LV ${s.level}  MAX` : `LV ${s.level}  ${s.xp} / ${s.xpNeed}`);
     }
     const bossKey = s.boss ? `${Math.ceil(s.boss.hp)}|${s.boss.maxHp}|${s.boss.eating}` : '';
@@ -963,10 +1132,11 @@ export class HudScene extends Phaser.Scene {
       g.clear();
       if (s.boss) {
         const f = Phaser.Math.Clamp(s.boss.hp / s.boss.maxHp, 0, 1);
+        const BB = bossBar(W);
         g.fillStyle(0x000000, 0.65);
-        g.fillRoundedRect(24, 202, W - 48, 30, 8);
+        g.fillRoundedRect(BB.x, BB.y, BB.w, BB.h, 8);
         g.fillStyle(s.boss.eating ? 0xffb000 : 0xff7a45, 1);
-        if (f > 0) g.fillRoundedRect(27, 205, Math.max(4, (W - 54) * f), 24, 6);
+        if (f > 0) g.fillRoundedRect(BB.x + 3, BB.y + 3, Math.max(4, (BB.w - 6) * f), BB.h - 6, 6);
         this.bossText.setText(`THE ${s.boss.name.toUpperCase()}  ${fmt(Math.ceil(s.boss.hp))} / ${fmt(s.boss.maxHp)}${s.boss.eating ? '  EATING YOUR NECTAR' : ''}`);
         this.bossText.setScale(Math.min(1, (W - 64) / Math.max(1, this.bossText.width)));
       } else this.bossText.setText('');
@@ -1015,6 +1185,14 @@ export class HudScene extends Phaser.Scene {
     this.shopLocked.setVisible(s.shop === 'locked' && !picking);
     this.nestHint.setText(inBreak && !s.inNest ? 'Walk to the nest to shop' : '');
     this.updateArrow(inBreak && !s.inNest, now, W, H);
+
+    // Lane N1, M2: the stats tab shows in a run; the panel steps aside while a pick's cards sit high in the break.
+    const statsVis = statsShown(this.statsOpen, s.phase, picking);
+    if (statsVis.button !== this.statsVis.button || statsVis.panel !== this.statsVis.panel) {
+      this.statsVis = statsVis;
+      this.applyStatsVisible();
+    }
+    if (statsVis.panel) this.refreshStats(s);
 
     if (shop) {
       for (const c of this.cards) {
@@ -1150,6 +1328,15 @@ export class HudScene extends Phaser.Scene {
     shop: Array<{ id: string; x: number; y: number; line: string; price: string }>;
     /** Lane G7: the "New version" line, its middle and its text. */
     update: { shown: boolean; x: number; y: number; text: string };
+    /** Lane N1, M2: the stats tab: open or not, its button, the panel as drawn, the close x's middle, the rows it shows. */
+    stats: {
+      open: boolean;
+      button: { x: number; y: number; w: number; h: number; shown: boolean };
+      panel: { x: number; y: number; w: number; h: number; shown: boolean; scale: number };
+      close: { x: number; y: number };
+      rows: StatRow[];
+      dart: number | null;
+    };
   } {
     const cards: Array<{ id: PowerId; x: number; y: number }> = [];
     for (const c of this.pickCards) {
@@ -1215,6 +1402,23 @@ export class HudScene extends Phaser.Scene {
         y: this.updateBg ? this.updateBg.y : 0,
         text: this.updateText ? this.updateText.text : '',
       },
+      stats: this.statsPlace
+        ? {
+            open: this.statsOpen,
+            button: { ...this.statsPlace.button, shown: this.statsVis.button },
+            panel: { ...this.statsPlace.panel, h: this.statsPanelH, shown: this.statsVis.panel, scale: this.statsBody ? this.statsBody.scaleX : 1 },
+            close: { x: this.statsPlace.close.x + this.statsPlace.close.w / 2, y: this.statsPlace.close.y + 32 },
+            rows: this.statsSheetNow ? this.statsSheetNow.rows.map((r) => ({ ...r })) : [],
+            dart: this.statsSheetNow ? this.statsSheetNow.numbers.dart : null,
+          }
+        : {
+            open: false,
+            button: { x: 0, y: 0, w: 0, h: 0, shown: false },
+            panel: { x: 0, y: 0, w: 0, h: 0, shown: false, scale: 1 },
+            close: { x: 0, y: 0 },
+            rows: [],
+            dart: null,
+          },
     };
   }
 

@@ -73,6 +73,92 @@ export function lowHealth(phase: string, hp: number, maxHp: number): boolean {
   return (phase === 'active' || phase === 'break') && hp > 0 && maxHp > 0 && hp / maxHp <= LOW_HEALTH_SHARE;
 }
 
+/** Lane N1: a box in HUD units, its top left corner and its size. */
+export interface Box {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export function boxesOverlap(a: Box, b: Box): boolean {
+  return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+}
+
+export function inBox(x: number, y: number, b: Box): boolean {
+  return x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h;
+}
+
+/** The top strip and its readouts, and the boss bar under it, where HudScene draws them (lane N1: the stats tab keeps clear). */
+export const TOP_STRIP_H = 152;
+export const HP_BAR: Box = { x: 22, y: 112, w: 324, h: 28 };
+export function levelBar(W: number): Box {
+  return { x: W - 346, y: 112, w: 324, h: 28 };
+}
+/** The sound switch: a 64 unit square icon, its middle 20 right of the screen's middle and 44 down. */
+export function muteButton(W: number): Box {
+  return { x: W / 2 + 20 - 32, y: 12, w: 64, h: 64 };
+}
+/** The nectar count (right aligned 58 in from the edge, 44 tall type) and its bead, with room for 9,999,999 drops. */
+export function nectarReadout(W: number): Box {
+  return { x: W - 330, y: 14, w: 318, h: 60 };
+}
+export const BOSS_BAR_Y = 202;
+export const BOSS_BAR_H = 30;
+export function bossBar(W: number): Box {
+  return { x: 24, y: BOSS_BAR_Y, w: W - 48, h: BOSS_BAR_H };
+}
+
+/**
+ * Lane N1, M2: the stats tab. The button sits on the left under the top strip and the boss bar, 88
+ * units square (48 points on a 390 point phone, over a 44 point tap target). The panel opens under it, two thirds of the
+ * screen wide, from under the break's countdown and nest line (H x 0.2, the line 50 below it) down to above the shop's
+ * grid and the pick sheet's low place, so it never covers the shop's cards or a round's level up cards. The close x is a
+ * tap target as big as the button, in the panel's top right corner.
+ */
+export const STATS_BTN = 88;
+export const STATS_PANEL_W = 480;
+const STATS_X = 12;
+const STATS_GAP = 8;
+export interface StatsPlace {
+  button: Box;
+  /** The panel's largest box; the HUD draws it as tall as its rows need, never taller. */
+  panel: Box;
+  close: Box;
+}
+
+export function statsLayout(H: number): StatsPlace {
+  const panelTop = Math.max(BOSS_BAR_Y + BOSS_BAR_H + STATS_GAP + STATS_BTN + STATS_GAP, Math.round(H * 0.2) + 78);
+  const bottom = Math.min(shopLayout(H).band.top, pickLayout('low', H).band.top) - 12;
+  const panel: Box = { x: STATS_X, y: panelTop, w: STATS_PANEL_W, h: bottom - panelTop };
+  return {
+    button: { x: STATS_X, y: panelTop - STATS_GAP - STATS_BTN, w: STATS_BTN, h: STATS_BTN },
+    panel,
+    close: { x: panel.x + panel.w - STATS_BTN, y: panel.y, w: STATS_BTN, h: STATS_BTN },
+  };
+}
+
+/**
+ * Lane N1: the tab shows only in a run (never on the title or the death screen); the panel when it is open, except
+ * while the cards of a pick sit high in the break, where it would cover them (it comes back after the tap).
+ */
+export function statsShown(open: boolean, phase: string, sheetUp: boolean): { button: boolean; panel: boolean } {
+  const run = phase === 'intro' || phase === 'active' || phase === 'break';
+  return { button: run, panel: run && open && !(sheetUp && pickPlace(phase) === 'high') };
+}
+
+export type StatsHit = 'button' | 'close' | 'panel' | null;
+
+/**
+ * Lane N1: what a press at (x, y) lands on: the button, the close x, the rest of the open panel, or nothing of the tab.
+ * panelH is the panel's drawn height. The HUD gives any of the three to the tab alone: the stick never takes it.
+ */
+export function statsHit(x: number, y: number, place: StatsPlace, panelH: number, shown: { button: boolean; panel: boolean }): StatsHit {
+  if (shown.button && inBox(x, y, place.button)) return 'button';
+  if (!shown.panel || !inBox(x, y, { ...place.panel, h: Math.min(place.panel.h, panelH) })) return null;
+  return inBox(x, y, place.close) ? 'close' : 'panel';
+}
+
 /** Lane G7, M2 and M3: the title's buttons, top to bottom. Continue shows only with a saved run. */
 export type TitleRow = 'cont' | 'play' | 'daily' | 'ladder' | 'nest';
 export interface TitleRowPlace {

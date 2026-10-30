@@ -53,13 +53,15 @@ const titleFlow = argv.includes('--title');
 const dailyFlow = argv.includes('--daily');
 // Lane G9: two real level ups and a break sheet, each read twice 3 s apart with the cards up, shot, tapped, read again.
 const pauseFlow = argv.includes('--pause');
+// Lane N1, M2: the stats tab on the phone (runStatsFlow).
+const statsFlow = argv.includes('--stats');
 const SMOKE_DAY = process.env.SMOKE_DAY || '2026-10-25';
 /** The last round players A and B compare (3 by default; a teeth run may stop after round 1). */
 const DAILY_UNTIL = Number(process.env.SMOKE_DAILY_UNTIL ?? 3);
 const LONG_MS = Number(process.env.SMOKE_LONG_MS ?? 480_000);
 /** The round the long bot must reach (4 in slice 1; slice 2 runs it to 26 in segments joined by the run save). */
 const LONG_TARGET = Number(process.env.SMOKE_LONG_TARGET ?? 4);
-const mode = desktop ? 'desktop' : dev ? 'dev' : long ? 'long' : growth ? 'growth' : colonyFlow ? 'colony' : juiceFlow ? 'juice' : pwaFlow ? 'pwa' : titleFlow ? 'title' : dailyFlow ? 'daily' : pauseFlow ? 'pause' : s4 ? `slice4${s4}` : startRound ? `round${startRound}` : 'build';
+const mode = desktop ? 'desktop' : dev ? 'dev' : long ? 'long' : growth ? 'growth' : colonyFlow ? 'colony' : juiceFlow ? 'juice' : pwaFlow ? 'pwa' : titleFlow ? 'title' : dailyFlow ? 'daily' : pauseFlow ? 'pause' : statsFlow ? 'stats' : s4 ? `slice4${s4}` : startRound ? `round${startRound}` : 'build';
 // SMOKE_TAG renames the output files, so a side check never overwrites a main run's evidence.
 const fileTag = process.env.SMOKE_TAG || mode;
 const PLAY_LIMIT_MS = 100_000;
@@ -2509,6 +2511,244 @@ async function runTitleFlow() {
 }
 let titleRun = null;
 
+/** Lane N1, M2: the HUD's readouts and every card that shows now, each tested against the stats button and panel as drawn. */
+const statsClear = () =>
+  page.evaluate(() => {
+    const hud = window.__antwars.game.scene.getScene('hud');
+    const st = hud.readout().stats;
+    const rectOf = (o) => {
+      const b = o.getBounds();
+      return { x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.width), h: Math.round(b.height) };
+    };
+    const hit = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+    const things = [
+      ['round', hud.roundText],
+      ['ladder line', hud.aliveText],
+      ['health', hud.hpText],
+      ['level', hud.levelText],
+      ['sound', hud.muteBtn],
+      ['nectar', hud.nectarText],
+      ['nectar bead', hud.nectarIcon],
+      ['boss', hud.bossText],
+      ['countdown', hud.breakText],
+      ['nest line', hud.nestHint],
+    ]
+      .filter(([, o]) => o && o.visible && o.text !== '')
+      .map(([n, o]) => [n, rectOf(o)]);
+    for (const c of hud.cards) if (c.bg.visible) things.push([`shop ${c.perk || c.line}`, rectOf(c.bg)]);
+    for (const c of hud.pickCards) if (c.bg.visible) things.push([`pick ${c.id}`, rectOf(c.bg)]);
+    const button = { x: st.button.x, y: st.button.y, w: st.button.w, h: st.button.h };
+    const panel = { x: st.panel.x, y: st.panel.y, w: st.panel.w, h: st.panel.h };
+    return {
+      button: st.button.shown ? button : null,
+      panel: st.panel.shown ? panel : null,
+      checked: things.map(([n]) => n),
+      underButton: st.button.shown ? things.filter(([, b]) => hit(button, b)).map(([n]) => n) : [],
+      underPanel: st.panel.shown ? things.filter(([, b]) => hit(panel, b)).map(([n]) => n) : [],
+    };
+  });
+const statsDamage = (h) => {
+  const row = h && h.stats ? h.stats.rows.find((x) => x.group === 'stat' && x.id === 'damage') : null;
+  return row ? row.value : null;
+};
+/** Lane N1, M2: a still tap on the middle of a HUD box (game units), then a short wait for the next frames. */
+const tapBox = async (b) => {
+  await tapAt(gameCss(b.x + b.w / 2, b.y + b.h / 2));
+  await sleep(250);
+  return hudNow();
+};
+/**
+ * Lane N1, M2: the stats tab on the phone viewport. No tab on the title; in round 1 a tap on STATS
+ * opens the panel with the live dart damage (the game's own build), a level up pick that changes the damage changes
+ * its row, the x closes it, Tab toggles it, a drag that starts on the open panel moves nothing while a drag below it
+ * moves the ant; in the break the panel sits beside the shop's cards and steps aside for a pick's cards; every readout
+ * and card stays clear of it; the death screen shows no tab.
+ */
+async function runStatsFlow() {
+  const r = { ok: false };
+  let h = await waitTitle();
+  r.title = { shown: !!h && h.title.shown, button: h.stats.button.shown, panel: h.stats.panel.shown };
+  r.play = await passTitle();
+  let s = await snap();
+  const startBy = Date.now() + 8000;
+  while (Date.now() < startBy && s && s.phase !== 'active') {
+    await sleep(100);
+    s = await snap();
+  }
+  // The ROUND 1 banner shows over the panel for 1.5 s (banners stay on top); the shot waits it out.
+  await sleep(1800);
+  s = await snap();
+  h = await hudNow();
+  r.round = { phase: s.phase, round: s.round, button: h.stats.button.shown, panel: h.stats.panel.shown, buttonBox: h.stats.button };
+  // A tap on the button opens the panel: its dart is the game's own (snapshot damage, the Yard's build).
+  h = await tapBox(h.stats.button);
+  s = await snap();
+  r.opened = { open: h.stats.open, shown: h.stats.panel.shown, dart: h.stats.dart, gameDamage: s.damage, row: statsDamage(h), rows: h.stats.rows.length, panel: h.stats.panel };
+  await screenshot('stats_open_round');
+  r.clearOpen = await statsClear();
+  await takeSample();
+  // Play until a level up; the panel stays open beside the round's cards (they sit low, under it).
+  let i = 0;
+  const lvlBy = Date.now() + 45_000;
+  while (Date.now() < lvlBy && s && s.phase !== 'dead' && !(s.pending > 0 && s.offer.length > 0)) {
+    const [dx, dy, ms] = pattern[i % pattern.length];
+    i += 1;
+    await hold(dx, dy, Math.min(ms, 1500));
+    await sleep(500);
+    s = await snap();
+  }
+  h = await hudNow();
+  r.cards = { sheet: h.pick.shown, panel: h.stats.panel.shown, offer: s.offer ? [...s.offer] : [] };
+  if (h.pick.shown) {
+    await sleep(350);
+    await screenshot('stats_with_cards');
+    r.clearCards = await statsClear();
+    // A pick that changes the dart (Strong Jaw, Front Fang or Echo Sting); if none is offered, the harness puts Strong
+    // Jaw on the sheet through the debug hook, and the tap itself goes through the HUD and the game as any pick does.
+    const dmgPowers = ['jaw', 'fang', 'echo'];
+    r.forced = !s.offer.some((id) => dmgPowers.includes(id));
+    if (r.forced) {
+      await page.evaluate(() => {
+        const g = window.__antwars.game.scene.getScene('game');
+        g.offer = ['jaw', ...g.offer.filter((id) => id !== 'jaw')].slice(0, 3);
+      });
+      await sleep(400);
+    }
+    h = await hudNow();
+    const idx = h.pick.cards.findIndex((c) => dmgPowers.includes(c.id));
+    const before = { row: statsDamage(h), damage: (await snap()).damage };
+    const pick = await tapPick(Math.max(0, idx));
+    await sleep(400);
+    h = await hudNow();
+    s = await snap();
+    r.afterPick = { id: pick ? pick.id : null, applied: !!pick && pick.ok, rowBefore: before.row, rowAfter: statsDamage(h), damageBefore: before.damage, damageAfter: s.damage, dart: h.stats.dart, open: h.stats.open, shown: h.stats.panel.shown };
+    await screenshot('stats_after_pick');
+    await clearPicks();
+  }
+  // The x closes the panel.
+  h = await hudNow();
+  await tapAt(gameCss(h.stats.close.x, h.stats.close.y));
+  await sleep(250);
+  h = await hudNow();
+  r.closed = { open: h.stats.open, shown: h.stats.panel.shown, button: h.stats.button.shown };
+  await screenshot('stats_closed');
+  // Tab on a keyboard opens and closes it as the button does.
+  await page.keyboard.press('Tab');
+  await sleep(200);
+  const tabOpen = (await hudNow()).stats.open;
+  await page.keyboard.press('Tab');
+  await sleep(200);
+  const tabShut = (await hudNow()).stats.open;
+  r.tab = { opened: tabOpen, closedAgain: tabShut === false };
+  // Open again; a drag that starts on the panel moves nothing and never takes the stick.
+  h = await tapBox(h.stats.button);
+  await clearPicks();
+  h = await hudNow();
+  const P = h.stats.panel;
+  const p0 = gameCss(P.x + P.w / 2, P.y + Math.min(P.h / 2, 220));
+  const b0 = await snap();
+  await touch('touchStart', [{ x: p0.x, y: p0.y, id: 7 }]);
+  await sleep(40);
+  let stickOnPanel = false;
+  for (let k = 1; k <= 6; k++) {
+    await touch('touchMove', [{ x: p0.x + k * 25, y: p0.y + k * 18, id: 7 }]);
+    await sleep(80);
+    stickOnPanel = stickOnPanel || (await page.evaluate(() => window.__antwars.game.scene.getScene('hud').stick.active));
+  }
+  const m0 = await snap();
+  await touch('touchEnd', []);
+  await sleep(250);
+  h = await hudNow();
+  r.dragOnPanel = {
+    start: p0,
+    moved: +Math.hypot(m0.antX - b0.antX, m0.antY - b0.antY).toFixed(1),
+    moving: m0.moving,
+    stick: stickOnPanel,
+    stillOpen: h.stats.open,
+    phase: m0.phase,
+    frozen: m0.frozen,
+  };
+  // A drag below the panel, where a thumb rests, moves the ant.
+  const b1 = await snap();
+  await touch('touchStart', [{ x: THUMB.x, y: THUMB.y, id: 8 }]);
+  await sleep(40);
+  await touch('touchMove', [{ x: THUMB.x, y: THUMB.y - 70, id: 8 }]);
+  await sleep(500);
+  const m1 = await snap();
+  await touch('touchEnd', []);
+  await sleep(200);
+  r.dragElsewhere = { start: { x: THUMB.x, y: THUMB.y }, moved: +Math.hypot(m1.antX - b1.antX, m1.antY - b1.antY).toFixed(1), moving: m1.moving, frozen: m1.frozen };
+  // The break: walk into the nest with the panel open; it sits beside the shop's cards.
+  s = await snap();
+  const brkBy = Date.now() + 60_000;
+  i = 0;
+  while (Date.now() < brkBy && s && s.phase !== 'break' && s.phase !== 'dead') {
+    const [dx, dy, ms] = pattern[i % pattern.length];
+    i += 1;
+    await hold(dx, dy, Math.min(ms, 1200));
+    await clearPicks();
+    await sleep(400);
+    s = await snap();
+  }
+  if (s && s.phase === 'break') {
+    s = await walkNest(true, 9000);
+    await clearPicks();
+    await sleep(300);
+    h = await hudNow();
+    r.inBreak = { phase: s.phase, inNest: s.inNest, shop: s.shop, cards: h.cards, open: h.stats.open, shown: h.stats.panel.shown, row: statsDamage(h) };
+    await screenshot('stats_open_break');
+    r.clearBreak = await statsClear();
+    // A pick's cards in the break sit high, over the panel's place: the panel steps aside, open, and comes back after the tap.
+    await page.evaluate(() => {
+      const g = window.__antwars.game.scene.getScene('game');
+      g.queuePicks(1, 'ROYAL JELLY: A FREE PICK');
+    });
+    await sleep(400);
+    h = await hudNow();
+    r.breakSheet = { sheet: h.pick.shown, open: h.stats.open, shown: h.stats.panel.shown };
+    await screenshot('stats_break_sheet');
+    r.clearSheet = await statsClear();
+    await tapPick(0);
+    await sleep(400);
+    h = await hudNow();
+    r.breakSheet.after = { sheet: h.pick.shown, open: h.stats.open, shown: h.stats.panel.shown };
+  }
+  // The death screen shows no tab.
+  s = await snap();
+  const actBy = Date.now() + 20_000;
+  while (Date.now() < actBy && s && s.phase === 'break') {
+    await sleep(200);
+    s = await snap();
+  }
+  await dieNow();
+  await sleep(300);
+  h = await hudNow();
+  s = await snap();
+  r.death = { phase: s.phase, button: h.stats.button.shown, panel: h.stats.panel.shown };
+  await screenshot('stats_death');
+  const none = (c) => !!c && c.underButton.length === 0 && c.underPanel.length === 0;
+  r.checks = {
+    noTabOnTitle: r.title.shown && !r.title.button && !r.title.panel,
+    buttonInRound: r.round.phase === 'active' && r.round.button && !r.round.panel,
+    buttonTapTarget: r.round.buttonBox.w >= 81.2 && r.round.buttonBox.h >= 81.2,
+    opensWithLiveDart: r.opened.open && r.opened.shown && r.opened.dart === r.opened.gameDamage && typeof r.opened.row === 'string' && r.opened.row.startsWith(`${r.opened.gameDamage} a dart`),
+    clearWhenOpen: none(r.clearOpen) && r.clearOpen.checked.includes('health') && r.clearOpen.checked.includes('sound'),
+    besideRoundCards: !!r.clearCards && r.cards.sheet && r.cards.panel && none(r.clearCards) && r.clearCards.checked.some((n) => n.startsWith('pick ')),
+    pickChangesDamage: !!r.afterPick && r.afterPick.applied && r.afterPick.rowAfter !== r.afterPick.rowBefore && r.afterPick.dart === r.afterPick.damageAfter && r.afterPick.damageAfter !== r.afterPick.damageBefore,
+    closeX: !r.closed.open && !r.closed.shown && r.closed.button,
+    tabToggles: r.tab.opened === true && r.tab.closedAgain,
+    dragOnPanelMovesNothing: r.dragOnPanel.stillOpen && !r.dragOnPanel.stick && r.dragOnPanel.moved < 2 && !r.dragOnPanel.moving,
+    dragElsewhereMoves: r.dragElsewhere.moved >= 20,
+    besideShop: !!r.inBreak && r.inBreak.shop === 'open' && r.inBreak.cards && r.inBreak.shown && none(r.clearBreak) && r.clearBreak.checked.some((n) => n.startsWith('shop ')),
+    asideForBreakCards: !!r.breakSheet && r.breakSheet.sheet && r.breakSheet.open && !r.breakSheet.shown && none(r.clearSheet) && !!r.breakSheet.after && r.breakSheet.after.shown,
+    noTabOnDeath: r.death.phase === 'dead' && !r.death.button && !r.death.panel,
+  };
+  r.ok = Object.values(r.checks).every(Boolean);
+  log('stats flow', JSON.stringify(r));
+  return r;
+}
+let statsRun = null;
+
 /** A YYYY-MM-DD day as the title shows it (Oct 25). */
 function dayName(day) {
   const [, m, d] = day.split('-').map(Number);
@@ -2886,7 +3126,7 @@ if (startRound && PACE_EXPECT[startRound]) {
     requestAnimationFrame(tick);
   }, startRound);
 }
-if (!colonyFlow && !juiceFlow && !pwaFlow && !titleFlow && !dailyFlow && !(long && stateIn)) titlePass = await passTitle();
+if (!colonyFlow && !juiceFlow && !pwaFlow && !titleFlow && !dailyFlow && !statsFlow && !(long && stateIn)) titlePass = await passTitle();
 
 if (dev || desktop) {
   await note('dev boot');
@@ -3257,6 +3497,8 @@ if (dev || desktop) {
   }
   pauseRun.freezes = await readFreezes();
   log('pause run', JSON.stringify({ sheets: pauseRun.sheets.map((x) => x.ok), breakSheet: pauseRun.breakSheet ? pauseRun.breakSheet.ok : null, freezes: pauseRun.freezes }));
+} else if (statsFlow) {
+  statsRun = await runStatsFlow();
 } else if (pwaFlow) {
   pwaRun = await runPwa();
 } else if (titleFlow) {
@@ -3512,6 +3754,7 @@ const result = {
   pauseRun,
   rushRun,
   paceRun,
+  statsRun,
 };
 writeFileSync(path.join(proof, `smoke_${fileTag}.json`), JSON.stringify(result, null, 2));
 
@@ -3541,7 +3784,7 @@ const checks = {
   roundFoundNoLine: mode === 'build' ? !!breakCheck && breakCheck.foundNoLine : true,
   dragFromCardMoves: mode === 'build' ? !!breakCheck && !!breakCheck.cardDrag && breakCheck.cardDrag.ok && breakCheck.backInShop === true : true,
   dragNeverBuys: long && !stateIn ? !!dragTest && dragTest.ok && dragTest.affordable === true : true,
-  reached: dev || desktop || colonyFlow || juiceFlow || pwaFlow || titleFlow ? maxRound >= 0 : dailyFlow ? maxRound >= (process.env.SMOKE_DAILY_AGAIN ? 0 : 3) : long ? maxRound >= LONG_TARGET : startRound ? maxRound >= startRound : maxRound >= 2,
+  reached: dev || desktop || colonyFlow || juiceFlow || pwaFlow || titleFlow || statsFlow ? maxRound >= 0 : dailyFlow ? maxRound >= (process.env.SMOKE_DAILY_AGAIN ? 0 : 3) : long ? maxRound >= LONG_TARGET : startRound ? maxRound >= startRound : maxRound >= 2,
   shopBuys: long ? longRun !== null && (stateIn ? true : longRun.purchases.length > 0) && longRun.purchases.every((p) => p.ok) : true,
   restartWorks: restart.tried ? restart.ok === true : true,
   bestSurvivesRelaunch: relaunch ? relaunch.ok === true : true,
@@ -3556,6 +3799,8 @@ const checks = {
   rushScales: startRound && RUSH_EXPECT[startRound] ? !!rushRun && rushRun.ok === true : true,
   // Lane N1: the round's spawns come at the round plan's gap, never slower than the horde from round 6.
   paceRamp: startRound && PACE_EXPECT[startRound] ? !!paceRun && paceRun.ok === true : true,
+  // Lane N1, M2: the stats tab on the phone (runStatsFlow's own checks).
+  statsTab: statsFlow ? !!statsRun && statsRun.ok === true : true,
   pauseHolds: pauseFlow ? !!pauseRun && pauseRun.sheets.length >= 2 && pauseRun.sheets.every((x) => x.ok) && !!pauseRun.breakSheet && pauseRun.breakSheet.ok && !!pauseRun.underSheet && pauseRun.underSheet.ok : true,
   buyRefusedUnderSheet: pauseFlow ? !!pauseRun && !!pauseRun.buyHeld && pauseRun.buyHeld.ok : true,
   rockBlocks: growth ? !!growthRun && !!growthRun.rock && growthRun.rock.ok : true,
