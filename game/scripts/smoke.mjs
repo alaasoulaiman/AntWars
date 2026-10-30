@@ -2700,6 +2700,44 @@ async function runStatsFlow() {
     r.inBreak = { phase: s.phase, inNest: s.inNest, shop: s.shop, cards: h.cards, open: h.stats.open, shown: h.stats.panel.shown, row: statsDamage(h) };
     await screenshot('stats_open_break');
     r.clearBreak = await statsClear();
+    // Design note, 2026-10-30: with a long mid run list the panel stays half wide and above the ant, its text at 0.8 or
+    // more, the list folded rather than shrunk. The run is filled through the game's own buys (the nest's shop is open
+    // here) and picks.
+    r.midRun = await page.evaluate(() => {
+      const g = window.__antwars.game.scene.getScene('game');
+      g.nectar = 1e6;
+      const bought = [];
+      for (const id of ['damage', 'damage', 'rate', 'health', 'speed']) bought.push(g.tryBuyLine(id));
+      for (const id of ['twin', 'chitin']) bought.push(g.tryBuy(id));
+      const picked = [];
+      for (const id of ['jaw', 'jaw', 'glands', 'eye', 'shell', 'fang', 'fury', 'stance', 'fork']) {
+        g.pending = 1;
+        g.offer = [id];
+        picked.push(g.pickPower(id));
+      }
+      return { bought, picked };
+    });
+    await sleep(500);
+    const mid = await page.evaluate(() => {
+      const g = window.__antwars.game.scene.getScene('game');
+      const hud = window.__antwars.game.scene.getScene('hud');
+      const st = hud.readout().stats;
+      const cam = g.cameras.main;
+      const lines = hud.statsLines
+        .filter((t) => t.visible)
+        .map((t) => {
+          const b = t.getBounds();
+          return { text: t.text, x: +b.x.toFixed(1), y: +b.y.toFixed(1), right: +b.right.toFixed(1), bottom: +b.bottom.toFixed(1) };
+        });
+      return { open: st.open, panel: st.panel, level: st.level, hidden: st.hidden, rows: st.rows.length, H: g.scale.height, ant: { x: +(g.ant.x - cam.worldView.x).toFixed(1), y: +(g.ant.y - cam.worldView.y).toFixed(1) }, lines };
+    });
+    mid.panelBottom = mid.panel.y + mid.panel.h;
+    mid.antTop = mid.ant.y - 16;
+    mid.overlap = +(mid.panelBottom - mid.antTop).toFixed(1);
+    mid.inside = mid.lines.every((l) => l.x >= mid.panel.x - 1 && l.right <= mid.panel.x + mid.panel.w + 1 && l.bottom <= mid.panelBottom + 1);
+    mid.damageWhole = mid.lines.every((l) => !/(^| )a$/.test(l.text) && !/^(dart|shot)/.test(l.text));
+    r.mid = mid;
+    await screenshot('stats_open_mid_run');
     // A pick's cards in the break sit high, over the panel's place: the panel steps aside, open, and comes back after the tap.
     await page.evaluate(() => {
       const g = window.__antwars.game.scene.getScene('game');
@@ -2742,6 +2780,9 @@ async function runStatsFlow() {
     dragOnPanelMovesNothing: r.dragOnPanel.stillOpen && !r.dragOnPanel.stick && r.dragOnPanel.moved < 2 && !r.dragOnPanel.moving,
     dragElsewhereMoves: r.dragElsewhere.moved >= 20,
     besideShop: !!r.inBreak && r.inBreak.shop === 'open' && r.inBreak.cards && r.inBreak.shown && none(r.clearBreak) && r.clearBreak.checked.some((n) => n.startsWith('shop ')),
+    midRunSmall:
+      !!r.mid && r.midRun.bought.every(Boolean) && r.midRun.picked.every(Boolean) && r.mid.open && r.mid.panel.shown && r.mid.rows >= 15 &&
+      r.mid.panel.w === 360 && r.mid.panel.scale >= 0.8 && r.mid.overlap <= 0 && r.mid.inside && r.mid.damageWhole,
     asideForBreakCards: !!r.breakSheet && r.breakSheet.sheet && r.breakSheet.open && !r.breakSheet.shown && none(r.clearSheet) && !!r.breakSheet.after && r.breakSheet.after.shown,
     noTabOnDeath: r.death.phase === 'dead' && !r.death.button && !r.death.panel,
   };

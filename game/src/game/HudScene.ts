@@ -13,8 +13,23 @@ import { attachAudio, isMuted, toggleMute } from './audio';
 import { HOWTO_ITEMS, readHowToSeen, writeHowToSeen } from './howto';
 import { PRESS_SLOP_PX, STICK_RADIUS, TapTracker, ThumbStick, type StickReading } from './joystick';
 import { NEST_BACK_H, NEST_PLAY_H, PICK_CARD_H, PICK_GAP, SHOP_CARD_H, SHOP_CARD_W, lowHealth, nestLayout, pickLayout, pickPlace, shopCell, shopLayout, titleLayout, type SheetPlace, type TitleRow } from './layout';
-import { HP_BAR, TOP_STRIP_H, bossBar, levelBar, muteButton, statsHit, statsLayout, statsShown, type StatsPlace } from './layout';
-import { GROUP_TITLES, rowText, statsSheet, type StatRow, type StatsSheet } from '../sim/stats';
+import {
+  HP_BAR,
+  STATS_HEAD_H,
+  STATS_PANEL_FILL,
+  TOP_STRIP_H,
+  bossBar,
+  levelBar,
+  muteButton,
+  statsHit,
+  statsLayout,
+  statsPanelPlan,
+  statsShown,
+  type StatsFitLevel,
+  type StatsLineKind,
+  type StatsPlace,
+} from './layout';
+import { statsSheet, type StatRow, type StatsSheet } from '../sim/stats';
 import type { Banner, GameScene, Snapshot } from './GameScene';
 
 const FONT = '"Arial Rounded MT Bold", "Arial Black", "Helvetica Neue", Arial, sans-serif';
@@ -92,9 +107,18 @@ type Press =
   | { kind: 'howto'; action: 'open' | 'close' }
   | { kind: 'stats'; action: 'toggle' | 'close' };
 
-/** Lane N1, M2: the stats panel's title row, and its label column (the values and notes start right of it). */
-const STATS_HEAD_H = 64;
-const STATS_LABEL_W = 150;
+/** Lane N1: the colour of each kind of line on the stats panel (layout.ts statsPanelPlan places them). */
+const STATS_COLOR: Readonly<Record<StatsLineKind, string>> = {
+  label: '#ffd34d',
+  value: '#ffffff',
+  note: '#cfe8c4',
+  head: '#ffd34d',
+  item: '#ffffff',
+  more: '#cfe8c4',
+  empty: '#cfe8c4',
+};
+/** Lane N1: the most lines the panel draws (a long run's full list fits in it before the plan folds the list). */
+const STATS_LINE_POOL = 64;
 
 
 function showFps(): boolean {
@@ -228,9 +252,12 @@ export class HudScene extends Phaser.Scene {
   private statsGfx!: Phaser.GameObjects.Graphics;
   private statsTitle!: Phaser.GameObjects.Text;
   private statsBody!: Phaser.GameObjects.Container;
-  private statsRowTexts: Array<[Phaser.GameObjects.Text, Phaser.GameObjects.Text, Phaser.GameObjects.Text]> = [];
-  private statsGroupTexts: Array<[Phaser.GameObjects.Text, Phaser.GameObjects.Text]> = [];
-  private statsEmpty!: Phaser.GameObjects.Text;
+  /** The panel's lines (a pool, placed by layout.ts statsPanelPlan) and one hidden text the plan measures with. */
+  private statsLines: Phaser.GameObjects.Text[] = [];
+  private statsMeasure!: Phaser.GameObjects.Text;
+  private statsLevel: StatsFitLevel = 'full';
+  private statsHidden = 0;
+  private statsPlanLines: Array<{ kind: StatsLineKind; text: string }> = [];
 
   constructor() {
     super('hud');
@@ -527,33 +554,21 @@ export class HudScene extends Phaser.Scene {
     this.statsBtnGfx = this.add.graphics().setDepth(1);
     this.statsBtnText = this.add.text(SB.x + SB.w / 2, SB.y + SB.h / 2, 'STATS', style(22, '#ffffff', { strokeThickness: 4 })).setOrigin(0.5).setDepth(1.1);
     this.statsBtnText.setScale(Math.min(1, (SB.w - 12) / Math.max(1, this.statsBtnText.width)));
-    // The panel lies under the HUD's own words (a banner or the nest arrow shows over it); its rows fit it by one scale.
+    // The panel lies under the HUD's own words (a banner or the nest arrow shows over it). Its lines come placed and
+    // wrapped from layout.ts statsPanelPlan, which measures them with the hidden text below in the same face.
     this.statsGfx = this.add.graphics().setDepth(-0.5);
     this.statsTitle = this.add.text(SP.x + 16, SP.y + 16, 'YOUR ANT', style(26, '#ffd34d')).setDepth(-0.4);
     this.statsBody = this.add.container(SP.x, SP.y + STATS_HEAD_H).setDepth(-0.4);
-    const valueW = SP.w - 16 - STATS_LABEL_W - 16;
-    const wrap = (width: number) => ({ strokeThickness: 3, wordWrap: { width, useAdvancedWrap: true } });
-    this.statsRowTexts = [];
-    for (let i = 0; i < 6; i++) {
-      const row: [Phaser.GameObjects.Text, Phaser.GameObjects.Text, Phaser.GameObjects.Text] = [
-        this.add.text(0, 0, '', style(18, '#ffd34d', { strokeThickness: 3 })),
-        this.add.text(0, 0, '', style(22, '#ffffff', wrap(valueW))),
-        this.add.text(0, 0, '', style(18, '#cfe8c4', wrap(valueW))),
-      ];
-      this.statsRowTexts.push(row);
-      this.statsBody.add(row);
+    this.statsLines = [];
+    for (let i = 0; i < STATS_LINE_POOL; i++) {
+      const t = this.add.text(0, 0, '', style(18, '#ffffff', { strokeThickness: 3 })).setVisible(false);
+      this.statsLines.push(t);
+      this.statsBody.add(t);
     }
-    this.statsGroupTexts = [];
-    for (let i = 0; i < GROUP_TITLES.length; i++) {
-      const group: [Phaser.GameObjects.Text, Phaser.GameObjects.Text] = [
-        this.add.text(0, 0, '', style(20, '#ffd34d', { strokeThickness: 3 })),
-        this.add.text(0, 0, '', style(20, '#ffffff', wrap(SP.w - 32))),
-      ];
-      this.statsGroupTexts.push(group);
-      this.statsBody.add(group);
-    }
-    this.statsEmpty = this.add.text(0, 0, 'No upgrades yet: level ups and the nest shop add them here', style(18, '#cfe8c4', wrap(SP.w - 32)));
-    this.statsBody.add(this.statsEmpty);
+    this.statsMeasure = this.add.text(0, 0, '', style(18, '#ffffff', { strokeThickness: 3 })).setVisible(false);
+    this.statsLevel = 'full';
+    this.statsHidden = 0;
+    this.statsPlanLines = [];
     this.applyStatsVisible();
     const tabKey = this.input.keyboard ? this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.TAB) : null;
     if (tabKey) tabKey.on('down', () => {
@@ -720,8 +735,8 @@ export class HudScene extends Phaser.Scene {
   }
 
   /**
-   * Lane N1, M2: fills the panel from the run as it stands (sim/stats.ts), whenever anything it shows has changed: the
-   * six stat rows, then the upgrades owned under their headings, the whole fitted to the panel's room by one scale.
+   * Lane N1, M2: fills the panel from the run as it stands (sim/stats.ts), whenever anything it shows has changed. The
+   * lines, their places and the body's scale come from layout.ts statsPanelPlan, measured in the panel's own face.
    */
   private refreshStats(s: Snapshot): void {
     const key = [s.ladder, Object.values(s.colonyLevels).join(','), s.owned.join(','), Object.values(s.lines).join(','), Object.values(s.stacks).join(','), Math.ceil(s.hp), s.maxHp].join('|');
@@ -729,36 +744,21 @@ export class HudScene extends Phaser.Scene {
     this.statsKey = key;
     const sheet = statsSheet({ ladder: s.ladder, colony: s.colonyLevels, owned: s.owned, lines: s.lines, stacks: s.stacks, hp: s.hp });
     this.statsSheetNow = sheet;
-    let y = 0;
-    sheet.rows
-      .filter((r) => r.group === 'stat')
-      .forEach((r, i) => {
-        const [label, value, note] = this.statsRowTexts[i];
-        label.setText(r.label).setPosition(16, y + 4);
-        value.setText(r.value).setPosition(16 + STATS_LABEL_W, y);
-        note.setText(r.note).setPosition(16 + STATS_LABEL_W, y + value.height - 4).setVisible(r.note !== '');
-        y += Math.max(label.height, value.height + (r.note !== '' ? note.height - 4 : 0)) + 6;
-      });
-    y += 4;
-    let any = false;
-    GROUP_TITLES.forEach(([group, title], i) => {
-      const [head, items] = this.statsGroupTexts[i];
-      const rows = sheet.rows.filter((r) => r.group === group);
-      head.setVisible(rows.length > 0);
-      items.setVisible(rows.length > 0);
-      if (rows.length === 0) return;
-      any = true;
-      head.setText(title).setPosition(16, y);
-      y += head.height - 2;
-      items.setText(rows.map(rowText).join(', ')).setPosition(16, y);
-      y += items.height + 8;
+    const m = this.statsMeasure;
+    const plan = statsPanelPlan(sheet.rows, this.statsPlace.panel, (text, size) => m.setFontSize(size).setText(text).width);
+    this.statsLines.forEach((t, i) => {
+      const line = plan.lines[i];
+      if (!line) {
+        t.setVisible(false);
+        return;
+      }
+      t.setFontSize(line.size).setColor(STATS_COLOR[line.kind]).setText(line.text).setPosition(line.x, line.y).setVisible(true);
     });
-    this.statsEmpty.setVisible(!any).setPosition(16, y);
-    if (!any) y += this.statsEmpty.height + 8;
-    const room = this.statsPlace.panel.h - STATS_HEAD_H - 10;
-    const k = Math.min(1, room / Math.max(1, y));
-    this.statsBody.setScale(k);
-    this.statsPanelH = Math.round(STATS_HEAD_H + y * k + 10);
+    this.statsLevel = plan.level;
+    this.statsHidden = plan.hidden;
+    this.statsPlanLines = plan.lines.slice(0, STATS_LINE_POOL).map((l) => ({ kind: l.kind, text: l.text }));
+    this.statsBody.setScale(plan.scale);
+    this.statsPanelH = plan.drawnH;
     this.drawStats();
   }
 
@@ -777,7 +777,7 @@ export class HudScene extends Phaser.Scene {
     g.clear();
     if (!this.statsVis.panel) return;
     const P = this.statsPlace.panel;
-    g.fillStyle(0x0b140a, 0.7);
+    g.fillStyle(0x0b140a, STATS_PANEL_FILL);
     g.fillRoundedRect(P.x, P.y, P.w, this.statsPanelH, 18);
     g.lineStyle(3, 0x9effa1, 0.5);
     g.strokeRoundedRect(P.x, P.y, P.w, this.statsPanelH, 18);
@@ -1340,6 +1340,10 @@ export class HudScene extends Phaser.Scene {
       close: { x: number; y: number };
       rows: StatRow[];
       dart: number | null;
+      /** Lane N1: how much the panel shows (layout.ts statsPanelPlan), the upgrades behind "+N more", the lines drawn. */
+      level: StatsFitLevel;
+      hidden: number;
+      lines: Array<{ kind: string; text: string }>;
     };
     /** Lane N1, M3: the thumb stick: the finger that holds it (-1 for none), its base, its knob and the way the ant runs. */
     stick: { pointerId: number; baseX: number; baseY: number; knobX: number; knobY: number; active: boolean; x: number; y: number };
@@ -1416,6 +1420,9 @@ export class HudScene extends Phaser.Scene {
             close: { x: this.statsPlace.close.x + this.statsPlace.close.w / 2, y: this.statsPlace.close.y + 32 },
             rows: this.statsSheetNow ? this.statsSheetNow.rows.map((r) => ({ ...r })) : [],
             dart: this.statsSheetNow ? this.statsSheetNow.numbers.dart : null,
+            level: this.statsLevel,
+            hidden: this.statsHidden,
+            lines: this.statsPlanLines.map((l) => ({ ...l })),
           }
         : {
             open: false,
@@ -1424,6 +1431,9 @@ export class HudScene extends Phaser.Scene {
             close: { x: 0, y: 0 },
             rows: [],
             dart: null,
+            level: 'full',
+            hidden: 0,
+            lines: [],
           },
       stick: {
         pointerId: this.thumb.pointerId,

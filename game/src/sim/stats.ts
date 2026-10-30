@@ -31,6 +31,8 @@ export interface StatRow {
   value: string;
   /** A short second line; empty when there is nothing to add. */
   note: string;
+  /** An upgrade's count (the power's stacks, the perk's or the line's buys, the colony's steps); a stat row has none. */
+  count?: number;
 }
 
 /** The numbers behind the rows. */
@@ -171,22 +173,22 @@ export function statsSheet(input: Readonly<StatsInput>): StatsSheet {
   ];
   for (const p of POWERS) {
     const k = input.stacks[p.id] ?? 0;
-    if (k > 0) rows.push({ group: 'power', id: p.id, label: p.name, value: p.max === null ? `x${k}` : `${k}/${p.max}`, note: p.line });
+    if (k > 0) rows.push({ group: 'power', id: p.id, label: p.name, value: p.max === null ? `x${k}` : `${k}/${p.max}`, note: p.line, count: k });
   }
   for (const p of PERKS) {
     const k = perkCount(input.owned, p.id);
-    if (k > 0) rows.push({ group: 'perk', id: p.id, label: p.name, value: p.max > 1 ? `${k}/${p.max}` : 'owned', note: p.blurb });
+    if (k > 0) rows.push({ group: 'perk', id: p.id, label: p.name, value: p.max > 1 ? `${k}/${p.max}` : 'owned', note: p.blurb, count: k });
   }
   for (const l of LINES) {
     const k = input.lines[l.id];
     if (k > 0) {
       // The card's own words for the total ("+28.5 damage"), its number kept: "Dart Damage +28.5 over 2 buys".
-      rows.push({ group: 'line', id: l.id, label: l.name, value: stepText(l.id, lineTotal(l.id, k)).split(' ')[0], note: `over ${k} ${k === 1 ? 'buy' : 'buys'}` });
+      rows.push({ group: 'line', id: l.id, label: l.name, value: stepText(l.id, lineTotal(l.id, k)).split(' ')[0], note: `over ${k} ${k === 1 ? 'buy' : 'buys'}`, count: k });
     }
   }
   for (const u of UPGRADES) {
     const k = levels[u.id];
-    if (k > 0) rows.push({ group: 'colony', id: u.id, label: u.name, value: `${k}/${u.max}`, note: colonyNote(u.id, levels) });
+    if (k > 0) rows.push({ group: 'colony', id: u.id, label: u.name, value: `${k}/${u.max}`, note: colonyNote(u.id, levels), count: k });
   }
   return { build, numbers: n, rows };
 }

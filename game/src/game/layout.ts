@@ -2,6 +2,8 @@
 // Where the HUD's two card stacks sit, as plain numbers in HUD units (720 wide, H tall). The shop's three cards sit low
 // on the right. The pick sheet sits low under the thumb during a round and, in the break, high under the countdown,
 // so a waiting pick never hides the shop (VG3 note 6).
+import { GROUP_TITLES, rowText, type StatRow } from '../sim/stats';
+import { CAMERA_LEAD_Y } from './tuning';
 
 export const SHOP_CARD_H = 104;
 export const SHOP_GAP = 12;
@@ -110,14 +112,25 @@ export function bossBar(W: number): Box {
 }
 
 /**
- * Lane N1, M2: the stats tab. The button sits on the left under the top strip and the boss bar, 88
- * units square (48 points on a 390 point phone, over a 44 point tap target). The panel opens under it, two thirds of the
- * screen wide, from under the break's countdown and nest line (H x 0.2, the line 50 below it) down to above the shop's
- * grid and the pick sheet's low place, so it never covers the shop's cards or a round's level up cards. The close x is a
- * tap target as big as the button, in the panel's top right corner.
+ * Lane N1, M2: the stats tab. The button sits on the left under the top strip and the boss bar, 88 units square (48
+ * points on a 390 point phone, over a 44 point tap target). The panel opens under it, half the screen wide, from under
+ * the break's countdown and nest line (H x 0.2, the line 50 below it) down to above the shop's grid, the pick sheet's
+ * low place and the ant, so it never covers the shop's cards, a round's level up cards, or the ant and its health bar.
+ * The close x is a tap target as big as the button, in the panel's top right corner.
+ * Design note, 2026-10-30: the tab is small and see through. At two thirds of the width, 70 percent fill and no floor on
+ * its text it covered the ant in ordinary play and its notes shrank to about 5 points on the smallest phone; it is now
+ * half the width, half filled, ends above the ant, and keeps its text at 0.8 or more by showing less (statsPanelPlan).
  */
 export const STATS_BTN = 88;
-export const STATS_PANEL_W = 480;
+export const STATS_PANEL_W = 360;
+/** How opaque the panel's dark fill is: the Yard shows through the other half. */
+export const STATS_PANEL_FILL = 0.5;
+/**
+ * The camera keeps the ant this share of the screen down (tuning.ts CAMERA_LEAD_Y below the middle), and the panel ends
+ * this many units above that point: the ant's health bar tops out 42 units above its middle (GameScene drawAnt).
+ */
+export const STATS_ANT_Y = 0.5 + CAMERA_LEAD_Y;
+export const STATS_ANT_CLEARANCE = 60;
 const STATS_X = 12;
 const STATS_GAP = 8;
 export interface StatsPlace {
@@ -129,13 +142,18 @@ export interface StatsPlace {
 
 export function statsLayout(H: number): StatsPlace {
   const panelTop = Math.max(BOSS_BAR_Y + BOSS_BAR_H + STATS_GAP + STATS_BTN + STATS_GAP, Math.round(H * 0.2) + 78);
-  const bottom = Math.min(shopLayout(H).band.top, pickLayout('low', H).band.top) - 12;
+  const bottom = Math.min(shopLayout(H).band.top - 12, pickLayout('low', H).band.top - 12, statsCap(H));
   const panel: Box = { x: STATS_X, y: panelTop, w: STATS_PANEL_W, h: bottom - panelTop };
   return {
     button: { x: STATS_X, y: panelTop - STATS_GAP - STATS_BTN, w: STATS_BTN, h: STATS_BTN },
     panel,
     close: { x: panel.x + panel.w - STATS_BTN, y: panel.y, w: STATS_BTN, h: STATS_BTN },
   };
+}
+
+/** The lowest the panel may reach on a screen H units tall: round(0.58 x H) less 60, clear of the ant and its health bar. */
+export function statsCap(H: number): number {
+  return Math.round(STATS_ANT_Y * H) - STATS_ANT_CLEARANCE;
 }
 
 /**
@@ -157,6 +175,183 @@ export function statsHit(x: number, y: number, place: StatsPlace, panelH: number
   if (shown.button && inBox(x, y, place.button)) return 'button';
   if (!shown.panel || !inBox(x, y, { ...place.panel, h: Math.min(place.panel.h, panelH) })) return null;
   return inBox(x, y, place.close) ? 'close' : 'panel';
+}
+
+/**
+ * Lane N1: the stats panel's body as plain lines in HUD units at scale 1, ready to draw. The title row (YOUR ANT and the
+ * close x) sits above it, STATS_HEAD_H tall; each stat row is a label on the left and its value and note beside it;
+ * the upgrades follow under their headings.
+ */
+export type StatsLineKind = 'label' | 'value' | 'note' | 'head' | 'item' | 'more' | 'empty';
+export interface StatsLine {
+  kind: StatsLineKind;
+  text: string;
+  x: number;
+  y: number;
+  size: number;
+}
+/** How much the body shows: everything, the notes dropped, one line of counts per kind, then kinds cut to "+N more". */
+export type StatsFitLevel = 'full' | 'no notes' | 'collapsed' | 'cut';
+export interface StatsPanelPlan {
+  level: StatsFitLevel;
+  /** The body's scale: 1 when it fits, never under STATS_TEXT_FLOOR while the six stat rows alone fit at it. */
+  scale: number;
+  /** The body's height at scale 1, and the whole panel's drawn height (title row, body at its scale, bottom pad). */
+  height: number;
+  drawnH: number;
+  /** Upgrades the list leaves out (the "+N more" line). */
+  hidden: number;
+  lines: StatsLine[];
+}
+/** The width of a text at a type size in HUD units: the HUD measures its own text, a test passes an estimate. */
+export type StatsMeasure = (text: string, size: number) => number;
+
+export const STATS_TEXT_FLOOR = 0.8;
+export const STATS_HEAD_H = 64;
+export const STATS_PAD = 16;
+export const STATS_BOTTOM_PAD = 10;
+/** The label column: "Fire rate" fits it at 16; "Damage taken" takes two lines. */
+export const STATS_LABEL_W = 100;
+export const STATS_SIZE: Readonly<Record<StatsLineKind, number>> = { label: 16, value: 20, note: 15, head: 16, item: 18, more: 16, empty: 16 };
+/** A line's height as a share of its type size (the bold face with its 3 unit stroke). */
+export const STATS_LEADING = 1.25;
+export const STATS_EMPTY_TEXT = 'No upgrades yet: level ups and the nest shop add them here';
+const STATS_ROW_GAP = 6;
+const STATS_GROUP_GAP = 6;
+
+const statsLineH = (kind: StatsLineKind): number => Math.round(STATS_SIZE[kind] * STATS_LEADING);
+
+/**
+ * Breaks text into lines no wider than width: between its comma phrases first ("150 a dart, 150 a shot" breaks after
+ * the comma), between words only inside a phrase wider than the line, and never between "a" and the word after it, so
+ * "a dart" and "a shot" stay whole on one line.
+ */
+export function wrapPhrases(text: string, size: number, width: number, measure: StatsMeasure): string[] {
+  const lines: string[] = [];
+  let cur = '';
+  const place = (piece: string): void => {
+    const cand = cur ? `${cur} ${piece}` : piece;
+    if (!cur || measure(cand, size) <= width) cur = cand;
+    else {
+      lines.push(cur);
+      cur = piece;
+    }
+  };
+  const parts = text.split(', ');
+  parts.forEach((p, i) => {
+    const phrase = i < parts.length - 1 ? `${p},` : p;
+    if (measure(phrase, size) <= width) {
+      place(phrase);
+      return;
+    }
+    const words: string[] = [];
+    for (const w of phrase.split(' ')) {
+      if (words.length > 0 && words[words.length - 1] === 'a') words[words.length - 1] = `a ${w}`;
+      else words.push(w);
+    }
+    for (const w of words) place(w);
+  });
+  if (cur) lines.push(cur);
+  return lines.length > 0 ? lines : [''];
+}
+
+/** The body at one level; keep is how many kinds a cut list keeps (the rest go to "+N more"). */
+function statsBody(rows: readonly StatRow[], width: number, measure: StatsMeasure, level: StatsFitLevel, keep: number): { height: number; hidden: number; lines: StatsLine[] } {
+  const lines: StatsLine[] = [];
+  const valueX = STATS_PAD + STATS_LABEL_W;
+  const valueW = width - valueX - STATS_PAD;
+  const innerW = width - 2 * STATS_PAD;
+  const add = (kind: StatsLineKind, text: string, x: number, y: number): void => {
+    lines.push({ kind, text, x, y, size: STATS_SIZE[kind] });
+  };
+  let y = 0;
+  for (const r of rows) {
+    if (r.group !== 'stat') continue;
+    const labels = wrapPhrases(r.label, STATS_SIZE.label, STATS_LABEL_W - 8, measure);
+    const values = wrapPhrases(r.value, STATS_SIZE.value, valueW, measure);
+    const notes = level === 'full' && r.note !== '' ? wrapPhrases(r.note, STATS_SIZE.note, valueW, measure) : [];
+    labels.forEach((t, i) => add('label', t, STATS_PAD, y + 3 + i * statsLineH('label')));
+    values.forEach((t, i) => add('value', t, valueX, y + i * statsLineH('value')));
+    const valuesH = values.length * statsLineH('value');
+    notes.forEach((t, i) => add('note', t, valueX, y + valuesH + i * statsLineH('note')));
+    y += Math.max(3 + labels.length * statsLineH('label'), valuesH + notes.length * statsLineH('note')) + STATS_ROW_GAP;
+  }
+  const groups = GROUP_TITLES.map(([group, title]) => ({ title, rows: rows.filter((r) => r.group === group) })).filter((g) => g.rows.length > 0);
+  let hidden = 0;
+  if (groups.length === 0) {
+    for (const t of wrapPhrases(STATS_EMPTY_TEXT, STATS_SIZE.empty, innerW, measure)) {
+      add('empty', t, STATS_PAD, y);
+      y += statsLineH('empty');
+    }
+  } else if (level === 'full' || level === 'no notes') {
+    for (const g of groups) {
+      add('head', g.title, STATS_PAD, y);
+      y += statsLineH('head');
+      for (const t of wrapPhrases(g.rows.map((r) => rowText(r)).join(', '), STATS_SIZE.item, innerW, measure)) {
+        add('item', t, STATS_PAD, y);
+        y += statsLineH('item');
+      }
+      y += STATS_GROUP_GAP;
+    }
+  } else {
+    // One line a kind, in the order of the headings and the full width without them: "Strong Jaw x2, Fork Darts x1"
+    // while they fit; the rest are counted.
+    groups.forEach((g, i) => {
+      if (i >= keep) {
+        hidden += g.rows.length;
+        return;
+      }
+      let text = '';
+      let shown = 0;
+      for (const r of g.rows) {
+        const cand = text ? `${text}, ${r.label} x${r.count ?? 1}` : `${r.label} x${r.count ?? 1}`;
+        if (measure(cand, STATS_SIZE.item) > innerW) break;
+        text = cand;
+        shown += 1;
+      }
+      hidden += g.rows.length - shown;
+      if (shown > 0) {
+        add('item', text, STATS_PAD, y);
+        y += statsLineH('item');
+      }
+    });
+    if (hidden > 0) {
+      add('more', `+${hidden} more`, STATS_PAD, y);
+      y += statsLineH('more');
+    }
+  }
+  return { height: y, hidden, lines };
+}
+
+/**
+ * Lane N1: how the stats panel shows the run in its box. The body may shrink to STATS_TEXT_FLOOR; past that it shows
+ * less, in this order: the notes go, then the upgrades fold to one line of counts per kind, then whole kinds from the
+ * end go into a final "+N more" line. The panel's drawn height never passes its box, so it never reaches the ant.
+ */
+export function statsPanelPlan(rows: readonly StatRow[], panel: Box, measure: StatsMeasure): StatsPanelPlan {
+  const room = panel.h - STATS_HEAD_H - STATS_BOTTOM_PAD;
+  const done = (level: StatsFitLevel, body: { height: number; hidden: number; lines: StatsLine[] }, scale: number): StatsPanelPlan => ({
+    level,
+    scale,
+    height: body.height,
+    drawnH: Math.min(panel.h, Math.ceil(STATS_HEAD_H + body.height * scale + STATS_BOTTOM_PAD - 1e-6)),
+    hidden: body.hidden,
+    lines: body.lines,
+  });
+  const scaleFor = (h: number) => Math.min(1, room / Math.max(1, h));
+  const kinds = GROUP_TITLES.filter(([group]) => rows.some((r) => r.group === group)).length;
+  for (const level of ['full', 'no notes', 'collapsed'] as const) {
+    const body = statsBody(rows, panel.w, measure, level, kinds);
+    if (scaleFor(body.height) >= STATS_TEXT_FLOOR) return done(level, body, scaleFor(body.height));
+  }
+  for (let keep = kinds - 1; keep > 0; keep--) {
+    const body = statsBody(rows, panel.w, measure, 'cut', keep);
+    if (scaleFor(body.height) >= STATS_TEXT_FLOOR) return done('cut', body, scaleFor(body.height));
+  }
+  // Every kind cut: if the stat rows are still too tall at the floor the box wins over the floor (no screen of 1280 to
+  // 1800 units comes to that, layout.test.ts).
+  const last = statsBody(rows, panel.w, measure, 'cut', 0);
+  return done('cut', last, scaleFor(last.height));
 }
 
 /** Lane G7, M2 and M3: the title's buttons, top to bottom. Continue shows only with a saved run. */
