@@ -111,6 +111,8 @@ export class HudScene extends Phaser.Scene {
 
   private world!: GameScene;
   private readonly thumb = new ThumbStick();
+  /** Lane N1, M3: where the stick's knob was last drawn (on the ring toward a thumb past it), for the smoke's read. */
+  private readonly stickKnob = { x: 0, y: 0 };
   /** Presses on the shop and pick cards: only a tap buys or picks (joystick.ts TapTracker). */
   private readonly taps = new TapTracker<Press>();
   private titleParts: Phaser.GameObjects.GameObject[] = [];
@@ -799,6 +801,8 @@ export class HudScene extends Phaser.Scene {
     this.stick.active = r.moving;
     this.stick.x = r.x;
     this.stick.y = r.y;
+    this.stickKnob.x = r.knobX;
+    this.stickKnob.y = r.knobY;
     const g = this.stickGfx;
     g.clear();
     g.fillStyle(0xffffff, 0.12);
@@ -1337,6 +1341,8 @@ export class HudScene extends Phaser.Scene {
       rows: StatRow[];
       dart: number | null;
     };
+    /** Lane N1, M3: the thumb stick: the finger that holds it (-1 for none), its base, its knob and the way the ant runs. */
+    stick: { pointerId: number; baseX: number; baseY: number; knobX: number; knobY: number; active: boolean; x: number; y: number };
   } {
     const cards: Array<{ id: PowerId; x: number; y: number }> = [];
     for (const c of this.pickCards) {
@@ -1419,6 +1425,16 @@ export class HudScene extends Phaser.Scene {
             rows: [],
             dart: null,
           },
+      stick: {
+        pointerId: this.thumb.pointerId,
+        baseX: this.thumb.baseX,
+        baseY: this.thumb.baseY,
+        knobX: this.stickKnob.x,
+        knobY: this.stickKnob.y,
+        active: this.stick.active,
+        x: this.stick.x,
+        y: this.stick.y,
+      },
     };
   }
 

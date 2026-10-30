@@ -55,13 +55,15 @@ const dailyFlow = argv.includes('--daily');
 const pauseFlow = argv.includes('--pause');
 // Lane N1, M2: the stats tab on the phone (runStatsFlow).
 const statsFlow = argv.includes('--stats');
+// Lane N1, M3: the thumb stick's base stays where the first touch landed (runStickFlow).
+const stickFlow = argv.includes('--stick');
 const SMOKE_DAY = process.env.SMOKE_DAY || '2026-10-25';
 /** The last round players A and B compare (3 by default; a teeth run may stop after round 1). */
 const DAILY_UNTIL = Number(process.env.SMOKE_DAILY_UNTIL ?? 3);
 const LONG_MS = Number(process.env.SMOKE_LONG_MS ?? 480_000);
 /** The round the long bot must reach (4 in slice 1; slice 2 runs it to 26 in segments joined by the run save). */
 const LONG_TARGET = Number(process.env.SMOKE_LONG_TARGET ?? 4);
-const mode = desktop ? 'desktop' : dev ? 'dev' : long ? 'long' : growth ? 'growth' : colonyFlow ? 'colony' : juiceFlow ? 'juice' : pwaFlow ? 'pwa' : titleFlow ? 'title' : dailyFlow ? 'daily' : pauseFlow ? 'pause' : statsFlow ? 'stats' : s4 ? `slice4${s4}` : startRound ? `round${startRound}` : 'build';
+const mode = desktop ? 'desktop' : dev ? 'dev' : long ? 'long' : growth ? 'growth' : colonyFlow ? 'colony' : juiceFlow ? 'juice' : pwaFlow ? 'pwa' : titleFlow ? 'title' : dailyFlow ? 'daily' : pauseFlow ? 'pause' : statsFlow ? 'stats' : stickFlow ? 'stick' : s4 ? `slice4${s4}` : startRound ? `round${startRound}` : 'build';
 // SMOKE_TAG renames the output files, so a side check never overwrites a main run's evidence.
 const fileTag = process.env.SMOKE_TAG || mode;
 const PLAY_LIMIT_MS = 100_000;
@@ -2749,6 +2751,115 @@ async function runStatsFlow() {
 }
 let statsRun = null;
 
+/** Lane N1, M3: the stick as the HUD holds it and the ant as the Yard moves it, read from the scenes (any build has these). */
+const stickNow = () =>
+  page.evaluate(() => {
+    const hud = window.__antwars.game.scene.getScene('hud');
+    const g = window.__antwars.game.scene.getScene('game');
+    const ro = hud.readout();
+    return {
+      pointerId: hud.thumb.pointerId,
+      baseX: hud.thumb.baseX,
+      baseY: hud.thumb.baseY,
+      knob: ro.stick ? { x: ro.stick.knobX, y: ro.stick.knobY } : null,
+      active: hud.stick.active,
+      x: +hud.stick.x.toFixed(4),
+      y: +hud.stick.y.toFixed(4),
+      antX: +g.ant.x.toFixed(1),
+      antY: +g.ant.y.toFixed(1),
+      rot: +g.ant.rotation.toFixed(3),
+      phase: g.phase,
+      frozen: g.snap ? g.snap.frozen : null,
+    };
+  });
+/**
+ * Lane N1, M3 (design note, 2026-10-29: the stick stays where the first touch landed, for the whole touch): the
+ * thumb stick on the phone. A press in the bottom third, then a drag far up and to the right past the ring: the base
+ * stays where the press landed, the knob sits on the ring and the ant runs up and to the right; the thumb comes back
+ * inside the ring, right of the first touch: the ant runs right (a trailing base would have sent it back down and
+ * left); a lift ends the stick; a press elsewhere puts a new base there.
+ */
+async function runStickFlow() {
+  const r = { ok: false };
+  let s = await snap();
+  const by = Date.now() + 8000;
+  while (Date.now() < by && s && s.phase !== 'active') {
+    await sleep(100);
+    s = await snap();
+  }
+  await sleep(1800);
+  const [GW] = env.gameSize.split('x').map(Number);
+  const unitsPerPx = GW / rect.w;
+  const toGame = (p) => ({ x: +((p.x - rect.x) * unitsPerPx).toFixed(2), y: +((p.y - rect.y) * unitsPerPx).toFixed(2) });
+  const ringPx = 92 / unitsPerPx;
+  const p1 = { x: Math.round(rect.x + rect.w * 0.28), y: Math.round(rect.y + rect.h * 0.82) };
+  r.press = { css: p1, game: toGame(p1), bottomThird: p1.y > rect.y + (rect.h * 2) / 3, ringPx: +ringPx.toFixed(2) };
+  await touch('touchStart', [{ x: p1.x, y: p1.y, id: 3 }]);
+  await sleep(60);
+  const at1 = await stickNow();
+  // Far up and to the right, four and a half ring radii out, in five steps.
+  const far = { x: p1.x + 3.2 * ringPx, y: p1.y - 3.2 * ringPx };
+  for (let i = 1; i <= 5; i++) {
+    await touch('touchMove', [{ x: p1.x + ((far.x - p1.x) * i) / 5, y: p1.y + ((far.y - p1.y) * i) / 5, id: 3 }]);
+    await sleep(60);
+  }
+  await sleep(150);
+  const f0 = await stickNow();
+  await sleep(400);
+  const f1 = await stickNow();
+  await screenshot('stick_far');
+  // Back inside the ring, right of the first touch.
+  const back = { x: p1.x + 0.6 * ringPx, y: p1.y };
+  await touch('touchMove', [{ x: back.x, y: back.y, id: 3 }]);
+  await sleep(150);
+  const b0 = await stickNow();
+  await sleep(300);
+  const b1 = await stickNow();
+  await screenshot('stick_back_inside_ring');
+  await touch('touchEnd', []);
+  await sleep(250);
+  const lifted = await stickNow();
+  // A new press elsewhere: a new base where it lands, and the ant runs toward its thumb.
+  const p2 = { x: Math.round(rect.x + rect.w * 0.7), y: Math.round(rect.y + rect.h * 0.7) };
+  await touch('touchStart', [{ x: p2.x, y: p2.y, id: 4 }]);
+  await sleep(60);
+  const at2 = await stickNow();
+  await touch('touchMove', [{ x: p2.x, y: p2.y - 0.8 * ringPx, id: 4 }]);
+  await sleep(300);
+  const n1 = await stickNow();
+  await screenshot('stick_new_base');
+  await touch('touchEnd', []);
+  await sleep(200);
+  const g1 = toGame(p1);
+  const g2 = toGame(p2);
+  const farDist = Math.hypot(toGame(far).x - g1.x, toGame(far).y - g1.y);
+  r.atPress = at1;
+  r.far = { css: { x: +far.x.toFixed(1), y: +far.y.toFixed(1) }, radii: +(farDist / 92).toFixed(2), f0, f1, antMoved: { dx: +(f1.antX - f0.antX).toFixed(1), dy: +(f1.antY - f0.antY).toFixed(1) } };
+  r.back = { b0, b1, antMoved: { dx: +(b1.antX - b0.antX).toFixed(1), dy: +(b1.antY - b0.antY).toFixed(1) } };
+  r.lifted = lifted;
+  r.second = { css: p2, game: g2, at2, n1 };
+  const near = (a, b) => Math.abs(a - b) < 0.6;
+  const knobOnRing = f1.knob === null ? null : Math.abs(Math.hypot(f1.knob.x - f1.baseX, f1.knob.y - f1.baseY) - 92) < 0.6;
+  r.checks = {
+    pressInBottomThird: r.press.bottomThird,
+    // Phaser numbers its own pointers (not the touch ids sent): a finger holds the stick when its id is not -1.
+    baseAtFirstTouch: at1.pointerId !== -1 && near(at1.baseX, g1.x) && near(at1.baseY, g1.y),
+    farPastRing: r.far.radii > 4,
+    baseStaysPut: f0.baseX === at1.baseX && f0.baseY === at1.baseY && f1.baseX === at1.baseX && f1.baseY === at1.baseY && b1.baseX === at1.baseX && b1.baseY === at1.baseY,
+    knobOnRing: knobOnRing === true,
+    runsUpAndRight: f1.active && f1.x > 0.69 && f1.y < -0.69 && r.far.antMoved.dx > 20 && r.far.antMoved.dy < -20 && Math.abs(f1.rot + Math.PI / 4) < 0.05,
+    backRunsRight: b1.active && b1.x > 0.99 && Math.abs(b1.y) < 0.01 && r.back.antMoved.dx > 15 && Math.abs(r.back.antMoved.dy) < 6,
+    liftEnds: lifted.pointerId === -1 && !lifted.active,
+    newBaseThere: at2.pointerId !== -1 && near(at2.baseX, g2.x) && near(at2.baseY, g2.y) && n1.baseX === at2.baseX && n1.baseY === at2.baseY,
+    newRunsUp: n1.active && Math.abs(n1.x) < 0.01 && n1.y < -0.99,
+    yardRunning: !f1.frozen && !b1.frozen && !n1.frozen,
+  };
+  r.ok = Object.values(r.checks).every(Boolean);
+  log('stick flow', JSON.stringify(r));
+  return r;
+}
+let stickRun = null;
+
 /** A YYYY-MM-DD day as the title shows it (Oct 25). */
 function dayName(day) {
   const [, m, d] = day.split('-').map(Number);
@@ -3499,6 +3610,8 @@ if (dev || desktop) {
   log('pause run', JSON.stringify({ sheets: pauseRun.sheets.map((x) => x.ok), breakSheet: pauseRun.breakSheet ? pauseRun.breakSheet.ok : null, freezes: pauseRun.freezes }));
 } else if (statsFlow) {
   statsRun = await runStatsFlow();
+} else if (stickFlow) {
+  stickRun = await runStickFlow();
 } else if (pwaFlow) {
   pwaRun = await runPwa();
 } else if (titleFlow) {
@@ -3755,6 +3868,7 @@ const result = {
   rushRun,
   paceRun,
   statsRun,
+  stickRun,
 };
 writeFileSync(path.join(proof, `smoke_${fileTag}.json`), JSON.stringify(result, null, 2));
 
@@ -3771,9 +3885,10 @@ const checks = {
   noConsoleErrors: errors.length === 0,
   noHttpErrors: httpErrors.length === 0,
   frameP95Under20ms: frames.rafDelta.p95 < 20,
-  stickMoves: process.env.SMOKE_STILL || process.env.SMOKE_HUNT || colonyFlow || juiceFlow || s4 || pwaFlow || titleFlow || dailyFlow ? true : sawMovingWhileHeld,
+  // The stick flow (lane N1, M3) reads the stick and the ant itself (stickBaseStays below) and holds no pattern.
+  stickMoves: process.env.SMOKE_STILL || process.env.SMOKE_HUNT || colonyFlow || juiceFlow || s4 || pwaFlow || titleFlow || dailyFlow || stickFlow ? true : sawMovingWhileHeld,
 
-  thumbMovesAnt: long || process.env.SMOKE_STILL || process.env.SMOKE_HUNT || colonyFlow || s4 || pwaFlow || titleFlow || dailyFlow ? true : antMovedByThumb >= 20,
+  thumbMovesAnt: long || process.env.SMOKE_STILL || process.env.SMOKE_HUNT || colonyFlow || s4 || pwaFlow || titleFlow || dailyFlow || stickFlow ? true : antMovedByThumb >= 20,
   stillAntClearsRound: process.env.SMOKE_STILL ? !!stillRun && stillRun.cleared && stillRun.moved !== null && stillRun.moved < 2 : true,
   stillAntClearsPile: process.env.SMOKE_STILL ? !!stillRun && !!stillRun.pile && stillRun.pile.onAntAtStart >= 5 && stillRun.pile.onAntAfter2500ms <= 1 : true,
   countdownVisible: mode === 'build' ? !!breakCheck && breakCheck.countdownOk : true,
@@ -3784,7 +3899,7 @@ const checks = {
   roundFoundNoLine: mode === 'build' ? !!breakCheck && breakCheck.foundNoLine : true,
   dragFromCardMoves: mode === 'build' ? !!breakCheck && !!breakCheck.cardDrag && breakCheck.cardDrag.ok && breakCheck.backInShop === true : true,
   dragNeverBuys: long && !stateIn ? !!dragTest && dragTest.ok && dragTest.affordable === true : true,
-  reached: dev || desktop || colonyFlow || juiceFlow || pwaFlow || titleFlow || statsFlow ? maxRound >= 0 : dailyFlow ? maxRound >= (process.env.SMOKE_DAILY_AGAIN ? 0 : 3) : long ? maxRound >= LONG_TARGET : startRound ? maxRound >= startRound : maxRound >= 2,
+  reached: dev || desktop || colonyFlow || juiceFlow || pwaFlow || titleFlow || statsFlow || stickFlow ? maxRound >= 0 : dailyFlow ? maxRound >= (process.env.SMOKE_DAILY_AGAIN ? 0 : 3) : long ? maxRound >= LONG_TARGET : startRound ? maxRound >= startRound : maxRound >= 2,
   shopBuys: long ? longRun !== null && (stateIn ? true : longRun.purchases.length > 0) && longRun.purchases.every((p) => p.ok) : true,
   restartWorks: restart.tried ? restart.ok === true : true,
   bestSurvivesRelaunch: relaunch ? relaunch.ok === true : true,
@@ -3801,6 +3916,8 @@ const checks = {
   paceRamp: startRound && PACE_EXPECT[startRound] ? !!paceRun && paceRun.ok === true : true,
   // Lane N1, M2: the stats tab on the phone (runStatsFlow's own checks).
   statsTab: statsFlow ? !!statsRun && statsRun.ok === true : true,
+  // Lane N1, M3: the stick's base stays where the first touch landed (runStickFlow's own checks).
+  stickBaseStays: stickFlow ? !!stickRun && stickRun.ok === true : true,
   pauseHolds: pauseFlow ? !!pauseRun && pauseRun.sheets.length >= 2 && pauseRun.sheets.every((x) => x.ok) && !!pauseRun.breakSheet && pauseRun.breakSheet.ok && !!pauseRun.underSheet && pauseRun.underSheet.ok : true,
   buyRefusedUnderSheet: pauseFlow ? !!pauseRun && !!pauseRun.buyHeld && pauseRun.buyHeld.ok : true,
   rockBlocks: growth ? !!growthRun && !!growthRun.rock && growthRun.rock.ok : true,

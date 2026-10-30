@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Alaa Soulaiman and KovaTech Industries Inc. MIT License, see LICENSE.
-// The floating thumb stick as plain math: which finger holds it, where the knob sits and which way the ant runs.
+// The thumb stick as plain math: which finger holds it, where the knob sits and which way the ant runs. Lane N1 (design
+// note, 2026-10-29): its base stays where the first touch landed for the whole touch.
 
 export const STICK_RADIUS = 92;
 
@@ -23,8 +24,12 @@ export interface StickReading {
 }
 
 /**
- * The knob follows the finger; past the radius the base trails the finger so the stick never runs out of room. The
- * dead zone is a distance in the same units as the points (the HUD passes PRESS_SLOP_PX converted to HUD units).
+ * Design note, 2026-10-29 (lane N1): the stick stays firm where the first touch landed and the thumb steers relative
+ * to that point; a stick that slid after a thumb run past its ring felt loose. The base never moves, however far the
+ * finger goes (it trailed a finger past the radius before); the way the ant runs is the finger's direction from the
+ * base, the knob follows the finger inside the ring and stops on its edge, toward the finger, past it. The ant runs at
+ * full speed once the finger is past the dead zone, as before, so it is full at the ring and beyond. The dead zone is a
+ * distance in the same units as the points (the HUD passes PRESS_SLOP_PX converted to HUD units).
  */
 export function readStick(
   baseX: number,
@@ -34,23 +39,14 @@ export function readStick(
   radius = STICK_RADIUS,
   deadzone = PRESS_SLOP_PX,
 ): StickReading {
-  let bx = baseX;
-  let by = baseY;
-  let dx = fingerX - bx;
-  let dy = fingerY - by;
-  let d = Math.hypot(dx, dy);
-  if (d > radius) {
-    const k = (d - radius) / d;
-    bx += dx * k;
-    by += dy * k;
-    dx = fingerX - bx;
-    dy = fingerY - by;
-    d = Math.hypot(dx, dy);
-  }
-  if (d === 0 || d < deadzone) {
-    return { baseX: bx, baseY: by, knobX: fingerX, knobY: fingerY, x: 0, y: 0, moving: false };
-  }
-  return { baseX: bx, baseY: by, knobX: fingerX, knobY: fingerY, x: dx / d, y: dy / d, moving: true };
+  const dx = fingerX - baseX;
+  const dy = fingerY - baseY;
+  const d = Math.hypot(dx, dy);
+  const k = d > radius ? radius / d : 1;
+  const knobX = baseX + dx * k;
+  const knobY = baseY + dy * k;
+  if (d === 0 || d < deadzone) return { baseX, baseY, knobX, knobY, x: 0, y: 0, moving: false };
+  return { baseX, baseY, knobX, knobY, x: dx / d, y: dy / d, moving: true };
 }
 
 /** No finger holds the stick. Phaser's pointer ids start at 0 (the mouse), so -1 is never a real pointer. */
@@ -59,7 +55,8 @@ export const NO_POINTER = -1;
 /**
  * Which finger drives the stick and where its base sits, in screen units. There is no zone: the first pointer
  * that goes down anywhere on the screen takes the stick with its base under the thumb, on a shop card too (a drag
- * from a card moves the ant; only a tap on a card buys, see TapTracker). Extra fingers are ignored until it lifts.
+ * from a card moves the ant; only a tap on a card buys, see TapTracker), and the base stays there until that finger
+ * lifts (lane N1). Extra fingers are ignored until it lifts. The HUD keeps the stats tab's presses from it.
  */
 export class ThumbStick {
   pointerId = NO_POINTER;
@@ -78,13 +75,10 @@ export class ThumbStick {
     return true;
   }
 
-  /** A pointer moved: the reading when it is the stick's finger, null for any other pointer. */
+  /** A pointer moved: the reading when it is the stick's finger, null for any other pointer. The base stays put. */
   move(pointerId: number, x: number, y: number): StickReading | null {
     if (this.pointerId === NO_POINTER || pointerId !== this.pointerId) return null;
-    const r = readStick(this.baseX, this.baseY, x, y, STICK_RADIUS, this.deadzone);
-    this.baseX = r.baseX;
-    this.baseY = r.baseY;
-    return r;
+    return readStick(this.baseX, this.baseY, x, y, STICK_RADIUS, this.deadzone);
   }
 
   /** A pointer lifted: true when it was the stick's finger, which frees the stick. */

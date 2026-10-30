@@ -22,11 +22,88 @@ describe('thumb stick', () => {
     expect(Math.hypot(diag.x, diag.y)).toBeCloseTo(1, 9);
   });
 
-  it('the base trails a finger that runs past the radius', () => {
+  // Lane N1, design note of 2026-10-29: the base trailed a finger past the radius here (to 208); it stays put now.
+  it('the base stays where the touch landed when the finger runs past the radius, the knob on the ring', () => {
     const r = readStick(100, 100, 100 + STICK_RADIUS + 108, 100);
-    expect(r.baseX).toBeCloseTo(208, 9);
+    expect(r.baseX).toBe(100);
     expect(r.baseY).toBe(100);
+    expect(r.knobX).toBeCloseTo(100 + STICK_RADIUS, 9);
+    expect(r.knobY).toBe(100);
     expect(r).toMatchObject({ moving: true, x: 1, y: 0 });
+  });
+});
+
+// Design note, 2026-10-29 (lane N1): the stick stays firm where the first touch landed. A touch in the bottom third
+// of a 1558 unit tall screen (the 390 by 844 phone), then the thumb 2 and 5 ring radii away.
+const BASE = { x: 360, y: 1200 };
+const ANGLES = [0, 45, 90, 135, 180, 225, 270, 315];
+const AWAY = ANGLES.flatMap((deg) => [2, 5].map((radii) => [deg, radii] as const));
+
+describe('the base stays where the first touch landed (lane N1)', () => {
+  it.each(AWAY)('the thumb %i degrees round and %i ring radii away: the base unmoved, the ant runs toward the thumb, the knob on the ring', (deg, radii) => {
+    const a = (deg * Math.PI) / 180;
+    const s = new ThumbStick();
+    expect(s.down(1, BASE.x, BASE.y)).toBe(true);
+    const r = s.move(1, BASE.x + Math.cos(a) * radii * STICK_RADIUS, BASE.y + Math.sin(a) * radii * STICK_RADIUS);
+    expect(r).not.toBeNull();
+    const reading = r as NonNullable<typeof r>;
+    expect([reading.baseX, reading.baseY]).toEqual([BASE.x, BASE.y]);
+    expect([s.baseX, s.baseY]).toEqual([BASE.x, BASE.y]);
+    expect(reading.moving).toBe(true);
+    expect(reading.x).toBeCloseTo(Math.cos(a), 9);
+    expect(reading.y).toBeCloseTo(Math.sin(a), 9);
+    expect(Math.hypot(reading.knobX - BASE.x, reading.knobY - BASE.y)).toBeCloseTo(STICK_RADIUS, 9);
+  });
+
+  it('a thumb that runs far right and comes back, still right of the first touch, keeps the ant running right', () => {
+    const s = new ThumbStick();
+    s.down(1, BASE.x, BASE.y);
+    s.move(1, BASE.x + 5 * STICK_RADIUS, BASE.y);
+    const back = s.move(1, BASE.x + 3 * STICK_RADIUS, BASE.y);
+    expect(back).toMatchObject({ moving: true, x: 1, y: 0, baseX: BASE.x, baseY: BASE.y });
+  });
+
+  it('a thumb that runs far away and comes home to the first touch stands the ant still', () => {
+    const s = new ThumbStick();
+    s.down(1, BASE.x, BASE.y);
+    s.move(1, BASE.x - 4 * STICK_RADIUS, BASE.y - 4 * STICK_RADIUS);
+    expect(s.move(1, BASE.x + 3, BASE.y - 2)?.moving).toBe(false);
+  });
+
+  it('a long winding drag never moves the base; the way the ant runs is always the thumb from the first touch', () => {
+    const s = new ThumbStick();
+    s.down(1, BASE.x, BASE.y);
+    const path = [
+      [600, 300],
+      [40, 200],
+      [700, 1500],
+      [100, 1400],
+      [361, 1000],
+    ];
+    for (const [x, y] of path) {
+      const r = s.move(1, x, y) as NonNullable<ReturnType<ThumbStick['move']>>;
+      const d = Math.hypot(x - BASE.x, y - BASE.y);
+      expect([r.baseX, r.baseY]).toEqual([BASE.x, BASE.y]);
+      expect(r.x).toBeCloseTo((x - BASE.x) / d, 9);
+      expect(r.y).toBeCloseTo((y - BASE.y) / d, 9);
+    }
+  });
+
+  it('lifting ends the stick; the next touch starts a new base where it lands, however far the last thumb went', () => {
+    const s = new ThumbStick();
+    s.down(1, 100, 1300);
+    s.move(1, 650, 350);
+    expect(s.up(1)).toBe(true);
+    expect(s.down(2, 500, 900)).toBe(true);
+    expect([s.baseX, s.baseY]).toEqual([500, 900]);
+    expect(s.move(2, 500, 800)).toMatchObject({ moving: true, x: 0, y: -1, baseX: 500, baseY: 900 });
+  });
+
+  it('full speed at the ring and past it: the way to run is a whole step whatever the distance past the dead zone', () => {
+    for (const k of [0.2, 1, 2, 5]) {
+      const r = readStick(0, 0, 0, -k * STICK_RADIUS);
+      expect(r).toMatchObject({ moving: true, x: 0, y: -1 });
+    }
   });
 });
 
