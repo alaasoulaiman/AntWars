@@ -3294,7 +3294,7 @@ const escortFlow = !!startRound && startRound % 10 === 0 && startRound % 25 !== 
 let escortRun = null;
 if (escortFlow) {
   await page.evaluate(([round, fightMs]) => {
-    const w = { round, fightMs, seen: 0, boss: null, bossAtMs: null, bossSeen: false, gap: null, escort: 0, escortKinds: [], lastEscortMs: null, death: null, after: 0, firstAfterMs: null, endMs: null };
+    const w = { round, fightMs, seen: 0, boss: null, bossAtMs: null, bossSeen: false, gap: null, escort: 0, escortKinds: [], lastEscortMs: null, death: null, after: 0, firstAfterMs: null, endMs: null, pays: [], count: null, markedOther: false };
     window.__escortWatch = w;
     const tick = () => {
       const a = window.__antwars;
@@ -3325,6 +3325,16 @@ if (escortFlow) {
           }
         }
         if (s.boss) w.bossSeen = true;
+        // Design note, 2026-10-31: the escort's pay as the booted game fixed it on each escort termite a hit or a kill
+        // reached (hit, bead, close bonus, experience), and the round's count of them.
+        for (const q of g.predators.getChildren()) {
+          if (q.escort && q.kind !== 'termite') w.markedOther = true;
+          if (q.escort && q.escortPay) {
+            const k = `${q.escortPay.hit},${q.escortPay.bead},${q.escortPay.close},${q.escortPay.xp}`;
+            if (!w.pays.includes(k)) w.pays.push(k);
+          }
+        }
+        if (g.escortCount) w.count = { ...g.escortCount };
         if (w.bossSeen && w.death === null && w.bossAtMs !== null) {
           const fell = (natural) => ({
             natural,
@@ -3966,15 +3976,24 @@ if (startRound && PACE_EXPECT[startRound]) {
   log('pace', JSON.stringify(paceRun));
 }
 if (escortFlow) {
-  escortRun = await page.evaluate(() => (window.__escortWatch ? { ...window.__escortWatch, escortKinds: [...window.__escortWatch.escortKinds] } : null));
+  escortRun = await page.evaluate(() => (window.__escortWatch ? { ...window.__escortWatch, escortKinds: [...window.__escortWatch.escortKinds], pays: [...window.__escortWatch.pays] } : null));
   if (escortRun) {
     const d = escortRun.death;
     escortRun.expectBoss = (startRound / 10) % 2 === 1 ? 'mantis' : 'hornet';
     // For the record: the last escort spawn came within the plan's gap and a frame (20 ms) of the fall.
     escortRun.lastWithinGap = !!d && d.sinceLastEscortMs !== null && escortRun.gap !== null && d.sinceLastEscortMs <= escortRun.gap * 1000 + 20;
+    // The pay (design note, 2026-10-31): a tenth (1, 2, 5, 1) for the first 30 escort termites, nothing (0, 0, 0, 0)
+    // past the 30th, no other pay, only termites marked, and the count is this round's.
+    const c = escortRun.count;
+    const tenth = '1,2,5,1';
+    const nothing = '0,0,0,0';
+    escortRun.payOk =
+      !!c && c.round === startRound && c.seen >= 1 && !escortRun.markedOther &&
+      escortRun.pays.every((k) => k === tenth || k === nothing) && escortRun.pays.includes(tenth) &&
+      (c.seen > 30 ? escortRun.pays.includes(nothing) : !escortRun.pays.includes(nothing));
     escortRun.ok =
       escortRun.boss === escortRun.expectBoss && !!d && d.queued > 0 && escortRun.after >= 1 &&
-      escortRun.escortKinds.length === 1 && escortRun.escortKinds[0] === 'termite';
+      escortRun.escortKinds.length === 1 && escortRun.escortKinds[0] === 'termite' && escortRun.payOk;
   }
   log('escort', JSON.stringify(escortRun));
 }

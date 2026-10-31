@@ -103,6 +103,33 @@ export const BOSS_SPAWN_GAP = 1.5;
 export const BOSS_ESCORT_SECONDS = 45;
 export const BOSS_ESCORT_SECONDS_STEP = 0.5;
 
+/**
+ * Design note, 2026-10-31: in a boss round the first ESCORT_PAID_CAP escort termites the ant takes down pay
+ * ESCORT_PAY_PERCENT of a termite's pay (1 nectar a hit for 10, a bead of 2 for 20, 5 for a close kill for 50) and the
+ * experience of 1 as before; every escort termite after the 30th pays nothing (no nectar, no bead, no close bonus, no
+ * experience), so a boss kept alive earns nothing, like a window barrier that stops paying after enough repairs.
+ * A termite rush pays as before. TERMITE_PAY mirrors economy.ts NECTAR_PER_HIT and
+ * CLOSE_KILL_BONUS, the termite's bead in roster.ts and its experience in growth.ts (escort.test.ts pins the mirror), so
+ * the next tuning is one edit here: the cap, the percent, or the experience line of ESCORT_PAY.
+ */
+export const ESCORT_PAID_CAP = 30;
+export const ESCORT_PAY_PERCENT = 10;
+/** One termite's pay: nectar a hit, the kill bead, the close kill bonus on top of it, experience. */
+export interface TermitePay {
+  hit: number;
+  bead: number;
+  close: number;
+  xp: number;
+}
+export const TERMITE_PAY: Readonly<TermitePay> = { hit: 10, bead: 20, close: 50, xp: 1 };
+export const ESCORT_PAY: Readonly<TermitePay> = {
+  hit: (TERMITE_PAY.hit * ESCORT_PAY_PERCENT) / 100,
+  bead: (TERMITE_PAY.bead * ESCORT_PAY_PERCENT) / 100,
+  close: (TERMITE_PAY.close * ESCORT_PAY_PERCENT) / 100,
+  xp: TERMITE_PAY.xp,
+};
+export const NO_PAY: Readonly<TermitePay> = { hit: 0, bead: 0, close: 0, xp: 0 };
+
 /** A gentle solo start: the first five rounds are cut to these percentages of the full count. */
 const EARLY_CUT_PERCENT: Readonly<Record<number, number>> = { 1: 25, 2: 30, 3: 50, 4: 70, 5: 90 };
 
@@ -193,6 +220,32 @@ export function bossEscort(round: number): number {
   assertRound(round);
   if (!isBossRound(round)) return 0;
   return Math.max(BOSS_ESCORT, Math.ceil(bossEscortSeconds(round) / rampGap(round, BOSS_SPAWN_GAP) - 1e-9));
+}
+
+/**
+ * Design note, 2026-10-31: what the n-th escort termite of a boss round pays (n from 1, in the order the ant's hits and
+ * kills first reach them; the Yard counts them from 0 again at every round start): ESCORT_PAY for the first
+ * ESCORT_PAID_CAP, NO_PAY after. Null where the round has no such termite (no boss, or n past bossEscort(round)).
+ */
+export function escortTermitePay(round: number, n: number): Readonly<TermitePay> | null {
+  assertRound(round);
+  if (!Number.isInteger(n) || n < 1 || n > bossEscort(round)) return null;
+  return n <= ESCORT_PAID_CAP ? ESCORT_PAY : NO_PAY;
+}
+
+/** The Yard's escort count: the round it counts, and how many of that round's escort termites a hit or kill has reached. */
+export interface EscortCount {
+  round: number;
+  seen: number;
+}
+
+/**
+ * One more escort termite reaches its first hit or kill: what it pays and the count after it. A count of another round
+ * starts again from 0, so the 30 paid are 30 a round; one past its round's escort pays nothing.
+ */
+export function countEscort(count: Readonly<EscortCount>, round: number): { count: EscortCount; pay: Readonly<TermitePay> } {
+  const seen = (count.round === round ? count.seen : 0) + 1;
+  return { count: { round, seen }, pay: escortTermitePay(round, seen) ?? NO_PAY };
 }
 
 export type SpeedTier = 'walk' | 'jog' | 'sprint';

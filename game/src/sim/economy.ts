@@ -3,7 +3,7 @@
 // Slice 4: the whole in run economy (the repeatable lines, their shrinking steps, the shared climbing price, the pick
 // cap, the cap on one hit, the ledger of nectar earned and spent, and the tuning model) lives here too.
 import { upgradeCost } from './colony';
-import { enemiesForRound, enemyHealth, roundPlan } from './curve';
+import { ESCORT_PAID_CAP, ESCORT_PAY, enemiesForRound, enemyHealth, roundPlan } from './curve';
 
 export interface AntStats {
   maxHp: number;
@@ -40,8 +40,8 @@ export const NECTAR_PER_HIT = 10;
 export const CLOSE_KILL_RANGE = 150;
 export const CLOSE_KILL_BONUS = 50;
 
-export function killNectar(baseNectar: number, distance: number): number {
-  return baseNectar + (distance <= CLOSE_KILL_RANGE ? CLOSE_KILL_BONUS : 0);
+export function killNectar(baseNectar: number, distance: number, closeBonus = CLOSE_KILL_BONUS): number {
+  return baseNectar + (distance <= CLOSE_KILL_RANGE ? closeBonus : 0);
 }
 
 /**
@@ -386,10 +386,14 @@ export function projectRun(toRound: number): ProjectedRound[] {
     if (plan.kind === 'horde') {
       const hits = Math.max(1, Math.ceil((enemyHealth(r) * MODEL_HP_SHARE) / dart));
       gain = enemiesForRound(r) * (NECTAR_PER_HIT * hits + MODEL_BEAD + CLOSE_KILL_BONUS * MODEL_CLOSE_SHARE);
+    } else if (plan.kind === 'breather') {
+      // A termite rush: termites at one hit each.
+      gain = plan.total * (NECTAR_PER_HIT + 20 + CLOSE_KILL_BONUS * MODEL_CLOSE_SHARE);
     } else {
-      // A breather or a boss round: termites at one hit each, plus a boss's big bead.
-      const termites = plan.kind === 'breather' ? plan.total : plan.total - 1;
-      gain = termites * (NECTAR_PER_HIT + 20 + CLOSE_KILL_BONUS * MODEL_CLOSE_SHARE) + (plan.kind === 'breather' ? 0 : 1000);
+      // A boss round: the boss's big bead, and of its escort at one hit each only the first ESCORT_PAID_CAP pay, at
+      // ESCORT_PAY (design note, 2026-10-31 in curve.ts); the rest pay nothing.
+      const paid = Math.min(ESCORT_PAID_CAP, plan.total - 1);
+      gain = paid * (ESCORT_PAY.hit + ESCORT_PAY.bead + ESCORT_PAY.close * MODEL_CLOSE_SHARE) + 1000;
     }
     gain = Math.round(gain);
     nectar += gain;

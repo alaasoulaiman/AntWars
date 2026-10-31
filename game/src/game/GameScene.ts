@@ -2,7 +2,7 @@
 // The Yard: the ant, the predators, the darts, the nectar and the round director.
 // Every round number comes from sim/curve.ts; predators from sim/roster.ts; the ant and the shop from sim/economy.ts.
 import * as Phaser from 'phaser';
-import { BREAK_SECONDS, breakStep, capPredatorSpeed, roundPlan, type RoundPlan } from '../sim/curve';
+import { BREAK_SECONDS, breakStep, capPredatorSpeed, countEscort, roundPlan, type EscortCount, type RoundPlan, type TermitePay } from '../sim/curve';
 import { browserRunStore, clearRun, encodeRun, loadRun, saveRun, type RunSave } from '../sim/save';
 import {
   ANTEATER_GULP_SECONDS,
@@ -302,6 +302,12 @@ class Predator extends Phaser.Physics.Arcade.Sprite {
   slowUntil = 0;
   /** A dart has hit it since it climbed out (Lucky Sting rolls only on the first hit). */
   struck = false;
+  /**
+   * Design note, 2026-10-31: a termite of a boss round's escort (curve.ts escortTermitePay), and what it pays, fixed at
+   * its first hit or kill (null until then).
+   */
+  escort = false;
+  escortPay: Readonly<TermitePay> | null = null;
   /** The Anteater's next gulp, and whether its snout is at the nest. */
   gulpAt = 0;
   eating = false;
@@ -445,6 +451,8 @@ export class GameScene extends Phaser.Scene {
   private practice = false;
   private plan: RoundPlan | null = null;
   private queued = 0;
+  /** Design note, 2026-10-31: the escort termites of this round a hit or a kill has reached, 0 at every round start. */
+  private escortCount: EscortCount = { round: 0, seen: 0 };
   private spawnTimer = 0;
   private introLeft = 0;
   private breakLeft = 0;
@@ -657,6 +665,7 @@ export class GameScene extends Phaser.Scene {
     this.banked = null;
     this.plan = null;
     this.queued = 0;
+    this.escortCount = { round: 0, seen: 0 };
     this.spawnTimer = 0;
     this.introLeft = T.INTRO_SECONDS;
     this.breakLeft = 0;
@@ -1055,7 +1064,8 @@ export class GameScene extends Phaser.Scene {
       this.procs.spark += 1;
       this.sparkFrom(p, dart.damage, now);
     }
-    this.earn(nectarGain(NECTAR_PER_HIT, this.nectarMultiplier()));
+    const pay = this.escortPayOf(p);
+    this.earn(nectarGain(pay ? pay.hit : NECTAR_PER_HIT, this.nectarMultiplier()));
     const big = dart.crit || lucky;
     const shelled = factor < 1 && !lucky;
     // Design note, 2026-10-24: hits on one predator within half a second show one number, their total (sim/hit.ts groupHit);
@@ -1127,6 +1137,20 @@ export class GameScene extends Phaser.Scene {
     return (this.blessing === 'double' ? 2 : 1) * this.nectarGain;
   }
 
+  /**
+   * Design note, 2026-10-31: an escort termite's pay, counted and fixed at its first hit or kill; null for any other
+   * predator, which pays as before.
+   */
+  private escortPayOf(p: Predator): Readonly<TermitePay> | null {
+    if (!p.escort) return null;
+    if (!p.escortPay) {
+      const next = countEscort(this.escortCount, this.round);
+      this.escortCount = next.count;
+      p.escortPay = next.pay;
+    }
+    return p.escortPay;
+  }
+
   private killPredator(p: Predator): void {
     // VG5 F1: a kill inside a kill (a spark kills a neighbour whose Flame Burst kills this dart's target first) must not
     // kill the target a second time and pay its bead, experience and combos again: a predator already down is left alone.
@@ -1142,8 +1166,11 @@ export class GameScene extends Phaser.Scene {
     this.dropBody(p);
     p.disableBody(true, true);
     this.kills++;
-    this.gainXp(xpForKill(p.kind));
-    this.spawnPickup('bead', x, y, nectarGain(killNectar(spec.nectar, dist), this.nectarMultiplier()));
+    // Design note, 2026-10-31: an escort termite pays its share (curve.ts escortTermitePay); one past the 30th pays nothing.
+    const pay = this.escortPayOf(p);
+    this.gainXp(pay ? pay.xp : xpForKill(p.kind));
+    const bead = pay ? killNectar(pay.bead, dist, pay.close) : killNectar(spec.nectar, dist);
+    if (bead > 0) this.spawnPickup('bead', x, y, nectarGain(bead, this.nectarMultiplier()));
     // An ember ant shot down pops where it fell: the burst hurts the predators round it, never the ant.
     if (p.kind === 'ember') this.emberBurst(p, false);
     // Slice 4: the combos a second element unlocks all fire on a kill.
@@ -1871,6 +1898,9 @@ export class GameScene extends Phaser.Scene {
     p.flashUntil = 0;
     p.slowUntil = 0;
     p.struck = false;
+    // A queued termite of a boss round is its escort; a wasp the hornet calls (at) is not.
+    p.escort = plan.kind === 'boss' && !at && kind === 'termite';
+    p.escortPay = null;
     p.gulpAt = 0;
     p.eating = false;
     p.stalledFor = 0;
@@ -2036,6 +2066,7 @@ export class GameScene extends Phaser.Scene {
     this.spawnNext = this.daily ? makeRng(streamSeed(this.dailySeedNow, 'spawn', r)) : Math.random;
     this.heldRoll = null;
     this.queued = this.plan.total;
+    this.escortCount = { round: r, seen: 0 };
     this.spawnTimer = 0.8;
     this.phase = 'active';
     this.vacuum = false;

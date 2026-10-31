@@ -11,9 +11,20 @@ import {
   SPAWN_GAP_FLOOR,
   bossEscort,
   bossEscortSeconds,
+  countEscort,
+  ESCORT_PAID_CAP,
+  ESCORT_PAY,
+  ESCORT_PAY_PERCENT,
+  escortTermitePay,
   isBossRound,
+  NO_PAY,
   roundPlan,
+  TERMITE_PAY,
+  type EscortCount,
 } from './curve';
+import { CLOSE_KILL_BONUS, CLOSE_KILL_RANGE, NECTAR_PER_HIT, killNectar } from './economy';
+import { KILL_XP, xpForKill } from './growth';
+import { PREDATORS } from './roster';
 
 // Design note, 2026-10-31: the escort was 30 termites in every boss round; at the horde gap of the pace rule they were
 // all out about 10 s into the round 10 fight (30 x 0.3151 s) and the boss fought alone after it. Now the escort is sized
@@ -206,5 +217,87 @@ describe('no other round moves: the plans from before the change, field by field
     expect(p.spawnGap).toBeCloseTo(gap, 11);
     // The total is the only field that moves, and only up.
     expect(p.total).toBeGreaterThan(total);
+  });
+});
+
+// Design note, 2026-10-31: the first 30 escort termites a hit or a kill reaches pay a tenth (1 a hit, a bead of 2,
+// 5 for a close kill, the experience of 1 as before); every one after the 30th pays nothing.
+const TENTH = { hit: 1, bead: 2, close: 5, xp: 1 };
+const NOTHING = { hit: 0, bead: 0, close: 0, xp: 0 };
+
+describe('the boss escort pays a tenth, and only its first 30 termites', () => {
+  // [round, the termite's place in the escort, what it pays, or null where the round has no such termite]
+  it.each([
+    [10, 1, TENTH],
+    [10, 30, TENTH],
+    [10, 31, NOTHING],
+    [10, 143, NOTHING],
+    [10, 144, null],
+    [10, 200, null],
+    [20, 1, TENTH],
+    [20, 30, TENTH],
+    [20, 31, NOTHING],
+    [20, 200, NOTHING],
+    [20, 266, NOTHING],
+    [20, 267, null],
+  ] as const)('round %i, escort termite %i pays %o', (round, n, want) => {
+    const pay = escortTermitePay(round, n);
+    if (want === null) expect(pay).toBeNull();
+    else expect({ ...pay }).toEqual(want);
+  });
+
+  it('round 10 has 143 escort termites, so there is no termite 200 there; round 20 has 266', () => {
+    expect(bossEscort(10)).toBe(143);
+    expect(bossEscort(20)).toBe(266);
+  });
+
+  it('the bead with its close kill bonus: 7 up close, 2 farther out, nothing past the 30th', () => {
+    expect(killNectar(ESCORT_PAY.bead, 0, ESCORT_PAY.close)).toBe(7);
+    expect(killNectar(ESCORT_PAY.bead, CLOSE_KILL_RANGE, ESCORT_PAY.close)).toBe(7);
+    expect(killNectar(ESCORT_PAY.bead, CLOSE_KILL_RANGE + 1, ESCORT_PAY.close)).toBe(2);
+    expect(killNectar(NO_PAY.bead, 0, NO_PAY.close)).toBe(0);
+  });
+
+  it('a rush termite at round 15 pays as before: 10 a hit, a bead of 20, 50 up close, 1 experience', () => {
+    const p = roundPlan(15);
+    expect(p.kind).toBe('breather');
+    expect(p.boss).toBeNull();
+    // A rush has no escort, so the Yard pays its termites the normal way.
+    expect(bossEscort(15)).toBe(0);
+    expect(escortTermitePay(15, 1)).toBeNull();
+    expect(NECTAR_PER_HIT).toBe(10);
+    expect(killNectar(PREDATORS.termite.nectar, 0)).toBe(70);
+    expect(killNectar(PREDATORS.termite.nectar, CLOSE_KILL_RANGE + 1)).toBe(20);
+    expect(xpForKill('termite')).toBe(1);
+  });
+
+  it('the count starts again at every round: 30 paid at round 10, then the first of round 20 pays again', () => {
+    let count: EscortCount = { round: 0, seen: 0 };
+    const paidIn = (round: number, n: number) => {
+      let paid = 0;
+      for (let i = 0; i < n; i++) {
+        const next = countEscort(count, round);
+        count = next.count;
+        if (next.pay.xp > 0) paid += 1;
+      }
+      return paid;
+    };
+    expect(paidIn(10, bossEscort(10))).toBe(30);
+    expect(count).toEqual({ round: 10, seen: 143 });
+    // One past the escort (a count gone wrong) still pays nothing.
+    expect({ ...countEscort(count, 10).pay }).toEqual(NOTHING);
+    const first = countEscort(count, 20);
+    expect(first.count).toEqual({ round: 20, seen: 1 });
+    expect({ ...first.pay }).toEqual(TENTH);
+    expect(paidIn(20, bossEscort(20))).toBe(30);
+    expect(count).toEqual({ round: 20, seen: 266 });
+  });
+
+  it('the numbers in one place: 30 and 10 percent, and TERMITE_PAY mirrors the termite the Yard pays', () => {
+    expect(ESCORT_PAID_CAP).toBe(30);
+    expect(ESCORT_PAY_PERCENT).toBe(10);
+    expect({ ...TERMITE_PAY }).toEqual({ hit: NECTAR_PER_HIT, bead: PREDATORS.termite.nectar, close: CLOSE_KILL_BONUS, xp: KILL_XP.termite });
+    expect({ ...ESCORT_PAY }).toEqual(TENTH);
+    expect({ ...NO_PAY }).toEqual(NOTHING);
   });
 });
