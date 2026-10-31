@@ -75,6 +75,17 @@ export function lowHealth(phase: string, hp: number, maxHp: number): boolean {
   return (phase === 'active' || phase === 'break') && hp > 0 && maxHp > 0 && hp / maxHp <= LOW_HEALTH_SHARE;
 }
 
+/**
+ * The line under the round number: the run's tag (the ladder's name, or DAILY on a Daily run) in the intro and in a
+ * round, the tag and cleared in the break, and nothing on the title or the death screen. It is handed the snapshot with
+ * the round's two counts, so a table test can prove they never reach the screen.
+ * Design note, 2026-10-30: the round line hides the remaining count, so the player cannot see when the round ends. The
+ * snapshot still carries alive and left for the smoke harness.
+ */
+export function ladderLine(s: { phase: string; alive: number; left: number }, tag: string): string {
+  return s.phase === 'active' || s.phase === 'intro' ? tag : s.phase === 'break' ? `${tag}   cleared` : '';
+}
+
 /** Lane N1: a box in HUD units, its top left corner and its size. */
 export interface Box {
   x: number;

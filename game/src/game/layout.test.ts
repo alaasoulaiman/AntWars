@@ -1,7 +1,8 @@
 // Copyright (c) 2026 Alaa Soulaiman and KovaTech Industries Inc. MIT License, see LICENSE.
 // Table tests for the HUD's card stacks: a waiting pick never hides the shop in the break (VG3 note 6).
 import { describe, expect, it } from 'vitest';
-import { emptyLevels } from '../sim/colony';
+import { LADDER_NAME, emptyLevels } from '../sim/colony';
+import { MAX_ALIVE } from '../sim/curve';
 import { emptyLines, type PerkId } from '../sim/economy';
 import { POWERS, emptyStacks, type PowerId } from '../sim/growth';
 import { statsSheet, type StatsInput } from '../sim/stats';
@@ -16,6 +17,7 @@ import {
   TOP_STRIP_H,
   bossBar,
   boxesOverlap,
+  ladderLine,
   levelBar,
   lowHealth,
   muteButton,
@@ -91,6 +93,33 @@ describe('the low health vignette', () => {
     ['dead', 0, 600, false], ['active', 0, 600, false], ['title', 100, 600, false], ['intro', 100, 600, false],
   ])('in the %s phase at %i of %i health it shows: %s', (phase, hp, max, shows) => {
     expect(lowHealth(phase as string, hp as number, max as number)).toBe(shows);
+  });
+});
+
+// Design note, 2026-10-30: the round line hides the remaining count, so the player cannot see when the round ends.
+describe('the round line under the round number', () => {
+  it.each([
+    ['intro', 'PURE', 0, 0, 'PURE'],
+    ['active', 'PURE', 0, 6, 'PURE'],
+    ['active', 'COLONY', 9, 20, 'COLONY'],
+    ['active', 'DAILY', 20, 40, 'DAILY'],
+    ['active', 'PURE', 1, 1, 'PURE'],
+    ['break', 'COLONY', 0, 0, 'COLONY   cleared'],
+    ['break', 'DAILY', 0, 0, 'DAILY   cleared'],
+    ['title', 'PURE', 0, 0, ''],
+    ['dead', 'PURE', 3, 0, ''],
+  ] as Array<[string, string, number, number, string]>)('in the %s phase with the tag %s, %i alive and %i left, the line reads "%s"', (phase, tag, alive, left, line) => {
+    expect(ladderLine({ phase, alive, left }, tag)).toBe(line);
+  });
+
+  it.each([LADDER_NAME.colony, LADDER_NAME.pure, 'DAILY'])(`in a round the line is the tag %s alone, no digit after it, from 0 to ${MAX_ALIVE} alive and up to 99 left`, (tag) => {
+    for (let alive = 0; alive <= MAX_ALIVE; alive++) {
+      for (let left = alive; left <= 99; left++) {
+        const line = ladderLine({ phase: 'active', alive, left }, tag);
+        expect(line.startsWith(tag)).toBe(true);
+        expect(line.slice(tag.length)).not.toMatch(/\d/);
+      }
+    }
   });
 });
 

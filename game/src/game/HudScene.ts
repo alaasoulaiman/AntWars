@@ -12,7 +12,7 @@ import { dayLabel } from '../sim/daily';
 import { attachAudio, isMuted, toggleMute } from './audio';
 import { HOWTO_ITEMS, readHowToSeen, writeHowToSeen } from './howto';
 import { PRESS_SLOP_PX, STICK_RADIUS, TapTracker, ThumbStick, type StickReading } from './joystick';
-import { NEST_BACK_H, NEST_PLAY_H, PICK_CARD_H, PICK_GAP, SHOP_CARD_H, SHOP_CARD_W, lowHealth, nestLayout, pickLayout, pickPlace, shopCell, shopLayout, titleLayout, type SheetPlace, type TitleRow } from './layout';
+import { NEST_BACK_H, NEST_PLAY_H, PICK_CARD_H, PICK_GAP, SHOP_CARD_H, SHOP_CARD_W, ladderLine, lowHealth, nestLayout, pickLayout, pickPlace, shopCell, shopLayout, titleLayout, type SheetPlace, type TitleRow } from './layout';
 import {
   HP_BAR,
   STATS_HEAD_H,
@@ -1100,9 +1100,7 @@ export class HudScene extends Phaser.Scene {
     // Lane G7, M3: a Daily run says so on the HUD, where the ladder's name sits on any other run.
     const tag = s.daily ? 'DAILY' : LADDER_NAME[s.ladder];
     this.roundText.setText(s.phase === 'title' ? '' : s.phase === 'intro' ? 'GET READY' : `ROUND ${s.round}`);
-    this.aliveText.setText(
-      s.phase === 'active' ? `${tag}   alive ${s.alive}   left ${s.left}` : s.phase === 'break' ? `${tag}   cleared` : s.phase === 'intro' ? tag : '',
-    );
+    this.aliveText.setText(ladderLine(s, tag));
     this.nectarText.setText(fmt(s.nectar));
     if (s.hp !== this.lastHp || s.maxHp !== this.lastMax) {
       this.lastHp = s.hp;
