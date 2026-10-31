@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Alaa Soulaiman and KovaTech Industries Inc. MIT License, see LICENSE.
 // Table tests for the Yard's rocks and holes, the steering round a rock, and the Anteater every 25th round.
 import { describe, expect, it } from 'vitest';
-import { BOSS_ESCORT, BOSS_SPAWN_GAP, bossKind, enemyHealth, isBreatherRound, roundPlan, spawnGapSeconds, PREDATOR_SPEED_CAP } from './curve';
+import { BOSS_ESCORT, BOSS_SPAWN_GAP, bossEscort, bossKind, enemyHealth, isBreatherRound, roundPlan, spawnGapSeconds, PREDATOR_SPEED_CAP } from './curve';
 import { ANTEATER_GULP, ANTEATER_REACH, PREDATORS, anteaterGulp, pickPredator, predatorHealth, predatorSpeedShare } from './roster';
 import {
   NEST_AT,
@@ -170,10 +170,12 @@ describe('the Anteater every 25th round', () => {
   });
 
   // Lane N1, design note of 2026-10-29: the escort came 1.5 s apart (BOSS_SPAWN_GAP); from the ramp it takes the
-  // horde gap of its round, 0.146 s at round 25.
-  it('round 25 sends the Anteater plus 30 termites, the round 25 health, the horde gap of round 25 and the usual break', () => {
+  // horde gap of its round, 0.146 s at round 25. Design note, 2026-10-31: the escort is sized by time (bossEscort), 360
+  // termites at round 25; BOSS_ESCORT (30) is its least count.
+  it('round 25 sends the Anteater plus 360 termites, the round 25 health, the horde gap of round 25 and the usual break', () => {
     const p = roundPlan(25);
-    expect(p).toMatchObject({ round: 25, kind: 'boss', total: BOSS_ESCORT + 1, aliveCap: 20, health: enemyHealth(25), breakSeconds: 15 });
+    expect(p).toMatchObject({ round: 25, kind: 'boss', total: bossEscort(25) + 1, aliveCap: 20, health: enemyHealth(25), breakSeconds: 15 });
+    expect(bossEscort(25)).toBe(360);
     expect(BOSS_ESCORT).toBe(30);
     expect(p.spawnGap).toBe(spawnGapSeconds(25));
     expect(p.spawnGap).toBeCloseTo(0.145994512169, 11);

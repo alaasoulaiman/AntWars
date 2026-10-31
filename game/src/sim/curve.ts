@@ -93,9 +93,15 @@ export const MID_BOSS_ROTATION: ReadonlyArray<BossKind> = ['mantis', 'hornet'];
  * gap, the slowest it may come. Design note, 2026-10-29 (lane N1): at 1.5 s the escort made round 10 a slow round;
  * every boss round comes after the ramp begins, so the round plan gives its escort the horde gap of the round
  * (rampGap): 0.3151 s at round 10, 0.1887 s at 20, 0.146 s at 25, the 0.1 s floor from 33 on (all 1.5 s before).
+ * Design note, 2026-10-31: at the horde gap the 30 were all out about 10 s into the round 10 fight and the boss fought
+ * alone after it. The escort is sized by time now (bossEscort): BOSS_ESCORT is its least count, and the termites keep
+ * coming for BOSS_ESCORT_SECONDS at round 10 (45 s, the old trickle of 30 at 1.5 s), BOSS_ESCORT_SECONDS_STEP more each
+ * round after it, frozen from HEALTH_CAP_ROUND with the health. The gap and the 20 alive cap are unchanged.
  */
 export const BOSS_ESCORT = 30;
 export const BOSS_SPAWN_GAP = 1.5;
+export const BOSS_ESCORT_SECONDS = 45;
+export const BOSS_ESCORT_SECONDS_STEP = 0.5;
 
 /** A gentle solo start: the first five rounds are cut to these percentages of the full count. */
 const EARLY_CUT_PERCENT: Readonly<Record<number, number>> = { 1: 25, 2: 30, 3: 50, 4: 70, 5: 90 };
@@ -161,6 +167,32 @@ export function spawnGapSeconds(round: number): number {
 export function rampGap(round: number, own: number): number {
   assertRound(round);
   return round >= LATE_SPAWN_FROM ? Math.min(own, spawnGapSeconds(round)) : own;
+}
+
+/**
+ * Design note, 2026-10-31: the seconds a boss round's escort keeps coming: 45 at round 10, half a second more a round,
+ * 60 from round 40 on, where the health stops growing (and the boss with it).
+ */
+export function bossEscortSeconds(round: number): number {
+  assertRound(round);
+  return BOSS_ESCORT_SECONDS + BOSS_ESCORT_SECONDS_STEP * Math.max(0, Math.min(round, HEALTH_CAP_ROUND) - MID_BOSS_EVERY);
+}
+
+/**
+ * Design note, 2026-10-31: the termites that follow a boss, a pure function of the round: enough at the round's escort
+ * gap to cover bossEscortSeconds, never under BOSS_ESCORT; 0 in a round with no boss. A fixed count keeps the round plan
+ * the one source of truth (the director queues its total, the economy model reads it). When the boss falls first the rest
+ * of the escort still comes, and the round ends as any other, when the last one is down. The 1e-9 keeps a float quotient
+ * such as 600.0000000001 at 600.
+ *   round        10      20      25      30      40 on
+ *   gap (s)      0.3151  0.1887  0.146   0.113   0.1
+ *   termites     143     266     360     487     600
+ *   seconds      45      50      52.5    55      60
+ */
+export function bossEscort(round: number): number {
+  assertRound(round);
+  if (!isBossRound(round)) return 0;
+  return Math.max(BOSS_ESCORT, Math.ceil(bossEscortSeconds(round) / rampGap(round, BOSS_SPAWN_GAP) - 1e-9));
 }
 
 export type SpeedTier = 'walk' | 'jog' | 'sprint';
@@ -296,7 +328,7 @@ export function roundPlan(round: number): RoundPlan {
   const boss = isBossRound(round);
   const breather = !boss && isBreatherRound(round);
   const rush = breather ? breatherByAppearance(breatherAppearance(round)) : null;
-  const total = boss ? BOSS_ESCORT + 1 : rush ? rush.count : enemiesForRound(round);
+  const total = boss ? bossEscort(round) + 1 : rush ? rush.count : enemiesForRound(round);
   return {
     round,
     kind: boss ? 'boss' : breather ? 'breather' : 'horde',

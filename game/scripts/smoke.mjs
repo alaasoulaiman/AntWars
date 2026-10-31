@@ -3278,6 +3278,80 @@ if (startRound && PACE_EXPECT[startRound]) {
     requestAnimationFrame(tick);
   }, startRound);
 }
+/**
+ * Design note, 2026-10-31: the boss escort keeps coming through the boss fight (curve.ts bossEscort). A practice run on a
+ * 10th round boss (the mantis or the hornet) is watched frame by frame inside the page: the boss's spawn on the Yard
+ * clock, each escort spawn after it, and the round at the boss's fall. A bare practice ant cannot shoot through the
+ * escort (a dart takes one termite and the nearest foe is the target), so from the boss's spawn the ant takes no damage
+ * (assist), and if the boss still stands ESCORT_FIGHT_MS of Yard time after it came, the harness ends it through the
+ * game's own kill path (killPredator, the one every lethal hit takes). The check: the escort was not used up when the
+ * boss fell, and a termite spawned after the fall. Before this change the 30 termites were all out about 10 s after the
+ * boss came.
+ */
+const ESCORT_FIGHT_MS = 30_000;
+const ESCORT_WALL_MS = 150_000;
+const escortFlow = !!startRound && startRound % 10 === 0 && startRound % 25 !== 0 && !s4 && !process.env.SMOKE_HUNT && !process.env.SMOKE_STILL;
+let escortRun = null;
+if (escortFlow) {
+  await page.evaluate(([round, fightMs]) => {
+    const w = { round, fightMs, seen: 0, boss: null, bossAtMs: null, bossSeen: false, gap: null, escort: 0, escortKinds: [], lastEscortMs: null, death: null, after: 0, firstAfterMs: null, endMs: null };
+    window.__escortWatch = w;
+    const tick = () => {
+      const a = window.__antwars;
+      const g = a && a.game.scene.getScene('game');
+      const s = a && a.snapshot();
+      if (g && s && s.round === round && w.endMs === null) {
+        if (Array.isArray(s.spawns)) {
+          while (w.seen < s.spawns.length) {
+            const e = s.spawns[w.seen];
+            w.seen += 1;
+            if (e.round !== round) continue;
+            if (w.bossAtMs === null) {
+              // The plan's boss comes first; from here on the ant takes no damage.
+              w.boss = e.kind;
+              w.bossAtMs = s.yardMs;
+              w.gap = g.plan ? g.plan.spawnGap : null;
+              g.assist = true;
+              continue;
+            }
+            if (!w.escortKinds.includes(e.kind)) w.escortKinds.push(e.kind);
+            if (w.death === null) {
+              w.escort += 1;
+              w.lastEscortMs = s.yardMs;
+            } else {
+              w.after += 1;
+              if (w.firstAfterMs === null) w.firstAfterMs = s.yardMs - w.death.yardMs;
+            }
+          }
+        }
+        if (s.boss) w.bossSeen = true;
+        if (w.bossSeen && w.death === null && w.bossAtMs !== null) {
+          const fell = (natural) => ({
+            natural,
+            yardMs: s.yardMs,
+            fightMs: s.yardMs - w.bossAtMs,
+            queued: g.queued,
+            alive: g.predators.countActive(true),
+            sinceLastEscortMs: w.lastEscortMs === null ? null : s.yardMs - w.lastEscortMs,
+            phase: g.phase,
+          });
+          if (!s.boss) w.death = fell(true);
+          else if (s.phase === 'active' && s.yardMs - w.bossAtMs >= fightMs) {
+            const p = g.predators.getChildren().find((q) => q.active && q.kind === w.boss);
+            if (p) {
+              w.death = fell(false);
+              g.killPredator(p);
+              w.death.aliveAfter = g.predators.countActive(true);
+            }
+          }
+        }
+        if (w.death !== null && s.phase !== 'active') w.endMs = s.yardMs;
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }, [startRound, ESCORT_FIGHT_MS]);
+}
 if (!colonyFlow && !juiceFlow && !pwaFlow && !titleFlow && !dailyFlow && !statsFlow && !(long && stateIn)) titlePass = await passTitle();
 
 if (dev || desktop) {
@@ -3745,6 +3819,27 @@ if (dev || desktop) {
     });
     await sleep(1500);
     await takeSample();
+    // Design note, 2026-10-31: what the Anteater ate is the fall in nectar plus what the ant earned in the window, less
+    // what it spent (the shop is shut in a round). The escort's termites keep paying the ant while it eats, so the fall
+    // alone hides the gulps; their kills also bring level up sheets, and a sheet stops the Yard, so a window is 2.2 s of
+    // Yard time, the sheets taken as they come.
+    const ate = (x, y) => x.nectar - y.nectar + (y.earned - x.earned) - (y.spent - x.spent);
+    const yardWindow = async (ms) => {
+      const x = await snap();
+      let y = x;
+      const until = Date.now() + 15_000;
+      while (Date.now() < until && y && y.yardMs - x.yardMs < ms) {
+        await clearPicks();
+        await sleep(100);
+        y = await snap();
+      }
+      return [x, y];
+    };
+    // A control window on the walk, before the nest: the same sum reads 0 there.
+    {
+      const [x, y] = await yardWindow(2200);
+      bossRun.walk = x && y && x.boss && y.boss && !x.boss.eating && !y.boss.eating ? { yardMs: y.yardMs - x.yardMs, earned: y.earned - x.earned, eaten: ate(x, y) } : null;
+    }
     while (Date.now() < end && s && s.phase !== 'dead' && s.boss && !s.boss.eating) {
       await clearPicks();
       await sleep(250);
@@ -3752,20 +3847,27 @@ if (dev || desktop) {
     }
     bossRun.reached = !!s && !!s.boss && s.boss.eating;
     if (bossRun.reached) {
-      const a = await snap();
-      await sleep(2200);
-      const b = await snap();
+      const [a, b] = await yardWindow(2200);
       const h = await page.evaluate(() => window.__antwars.game.scene.getScene('hud').bossText.text);
-      bossRun.eat = { nectarA: a.nectar, nectarB: b.nectar, eaten: a.nectar - b.nectar, bossAt: a.boss, barText: h, hp: b.boss ? b.boss.hp : null, maxHp: b.boss ? b.boss.maxHp : null };
+      bossRun.eat = {
+        nectarA: a.nectar, nectarB: b.nectar, fall: a.nectar - b.nectar, earned: b.earned - a.earned, spent: b.spent - a.spent, yardMs: b.yardMs - a.yardMs,
+        eaten: ate(a, b), bossAt: a.boss, barText: h, hp: b.boss ? b.boss.hp : null, maxHp: b.boss ? b.boss.maxHp : null,
+      };
       await screenshot('anteater');
     }
   }
-  // Two gulps of 250 in 2.2 s, less what the ant earns meanwhile (10 a hit, the beads of the termites it kills).
+  // Two gulps of 250 in 2.2 s of Yard time: what the Anteater ate, with the ant's pay in the window added back.
   bossRun.ok = bossRun.spawned && bossRun.reached && !!bossRun.eat && bossRun.eat.eaten >= 250 && /EATING YOUR NECTAR/.test(bossRun.eat.barText) && bossRun.first.maxHp === 87300;
   log('anteater', JSON.stringify(bossRun));
 } else if (startRound) {
   let i = 0;
-  while (Date.now() - t0 < PRACTICE_MS) {
+  // A 10th round boss run plays on until the boss has fallen and the escort after it is seen (escortFlow).
+  const escortSettled = () =>
+    page.evaluate(() => {
+      const w = window.__escortWatch;
+      return !!w && w.death !== null && (w.after >= 2 || w.endMs !== null);
+    });
+  while (Date.now() - t0 < PRACTICE_MS || (escortFlow && Date.now() - t0 < ESCORT_WALL_MS && !(await escortSettled()))) {
     const [dx, dy, ms] = pattern[i % pattern.length];
     i += 1;
     await hold(dx, dy, ms);
@@ -3863,6 +3965,19 @@ if (startRound && PACE_EXPECT[startRound]) {
   } else paceRun.ok = false;
   log('pace', JSON.stringify(paceRun));
 }
+if (escortFlow) {
+  escortRun = await page.evaluate(() => (window.__escortWatch ? { ...window.__escortWatch, escortKinds: [...window.__escortWatch.escortKinds] } : null));
+  if (escortRun) {
+    const d = escortRun.death;
+    escortRun.expectBoss = (startRound / 10) % 2 === 1 ? 'mantis' : 'hornet';
+    // For the record: the last escort spawn came within the plan's gap and a frame (20 ms) of the fall.
+    escortRun.lastWithinGap = !!d && d.sinceLastEscortMs !== null && escortRun.gap !== null && d.sinceLastEscortMs <= escortRun.gap * 1000 + 20;
+    escortRun.ok =
+      escortRun.boss === escortRun.expectBoss && !!d && d.queued > 0 && escortRun.after >= 1 &&
+      escortRun.escortKinds.length === 1 && escortRun.escortKinds[0] === 'termite';
+  }
+  log('escort', JSON.stringify(escortRun));
+}
 if (!frames) await takeSample();
 const final = await note('final');
 const result = {
@@ -3908,6 +4023,7 @@ const result = {
   pauseRun,
   rushRun,
   paceRun,
+  escortRun,
   statsRun,
   stickRun,
 };
@@ -3955,6 +4071,8 @@ const checks = {
   rushScales: startRound && RUSH_EXPECT[startRound] ? !!rushRun && rushRun.ok === true : true,
   // Lane N1: the round's spawns come at the round plan's gap, never slower than the horde from round 6.
   paceRamp: startRound && PACE_EXPECT[startRound] ? !!paceRun && paceRun.ok === true : true,
+  // Design note, 2026-10-31: termites still come when a 10th round boss falls (the escort is not used up).
+  bossEscortRuns: escortFlow ? !!escortRun && escortRun.ok === true : true,
   // Lane N1, M2: the stats tab on the phone (runStatsFlow's own checks).
   statsTab: statsFlow ? !!statsRun && statsRun.ok === true : true,
   // Lane N1, M3: the stick's base stays where the first touch landed (runStickFlow's own checks).

@@ -9,6 +9,7 @@ import {
   COUNT_BASE,
   breatherAppearance,
   breatherByAppearance,
+  bossEscort,
   MAX_ALIVE,
   SPAWN_GAP_TUNING,
   PREDATOR_SPEED_CAP,
@@ -328,12 +329,13 @@ describe('a boss every 10th round (slice 4), the Anteater keeps every 25th', () 
   });
 
   // Lane N1, design note of 2026-10-29: the 30 termites came 1.5 s apart here; now they come at the horde gap of the round.
-  it('a 10th round boss comes in place of the breather, with 30 termites at the horde gap of its round, as the Anteater does', () => {
+  // Design note, 2026-10-31: the escort is sized by time, no longer 30 (bossEscort, escort.test.ts).
+  it('a 10th round boss comes in place of the breather, with its termite escort at the horde gap of its round, as the Anteater does', () => {
     for (const r of [10, 20, 30, 40]) {
       const p = roundPlan(r);
       expect(p.kind).toBe('boss');
       expect(p.boss).toBe(bossKind(r));
-      expect(p.total).toBe(31);
+      expect(p.total).toBe(bossEscort(r) + 1);
       expect(p.spawnGap).toBe(spawnGapSeconds(r));
     }
     // Round 15 is the second termite rush (lane G9, M4: 48 of them, rush.test.ts).
